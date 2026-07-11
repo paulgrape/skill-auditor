@@ -1,0 +1,164 @@
+import * as fs from 'fs'
+import * as path from 'path'
+import { PACKAGE_TO_CATEGORY } from './taxonomy.js'
+import {
+  FRESHNESS_PENALTY,
+  MIXED_SKILL_THRESHOLD,
+  SCORE_WEIGHTS,
+  SPECIFICITY_SATURATION,
+} from './taxonomy.js'
+import type {
+  AlignmentReport,
+  RepoReality,
+  ScoreBreakdown,
+  SkillIdentifiers,
+  SkillKind,
+  SkillScore,
+} from './types.js'
+
+function totalTechRefs(skill: SkillIdentifiers): number {
+  return (
+    skill.packages.size + skill.importSpecifiers.size + skill.apiCalls.size
+  )
+}
+
+export function classifySkillKind(skill: SkillIdentifiers): SkillKind {
+  const refs = totalTechRefs(skill)
+  if (refs === 0) return 'neutral'
+  if (refs <= MIXED_SKILL_THRESHOLD) return 'mixed'
+  return 'technical'
+}
+
+function repoCategories(repo: RepoReality): Set<string> {
+  const cats = new Set<string>()
+  const pkgs = new Set([
+    ...Object.keys(repo.declaredDeps),
+    ...Object.keys(repo.usedImports),
+  ])
+  for (const pkg of pkgs) {
+    const cat = PACKAGE_TO_CATEGORY[pkg]
+    if (cat) cats.add(cat)
+  }
+  return cats
+}
+
+function skillCategories(skill: SkillIdentifiers): Set<string> {
+  const cats = new Set<string>()
+  for (const pkg of skill.packages) {
+    const cat = PACKAGE_TO_CATEGORY[pkg]
+    if (cat) cats.add(cat)
+  }
+  return cats
+}
+
+function computeCoverage(skill: SkillIdentifiers, repo: RepoReality): number {
+  const repoCats = repoCategories(repo)
+  if (repoCats.size === 0) return 1
+  const skillCats = skillCategories(skill)
+  let matched = 0
+  for (const cat of repoCats) {
+    if (skillCats.has(cat)) matched++
+  }
+  return matched / repoCats.size
+}
+
+function computeFreshness(report: AlignmentReport): number {
+  const deprecatedCount = report.findings.filter(
+    f => f.kind === 'deprecated-api' && f.severity === 'critical',
+  ).length
+  return Math.max(0, 1 - deprecatedCount * FRESHNESS_PENALTY)
+}
+
+function computeSpecificity(report: AlignmentReport): number {
+  return Math.min(
+    1,
+    report.scorableReferenceCount / SPECIFICITY_SATURATION,
+  )
+}
+
+function toGrade(score: number): string {
+  if (score >= 90) return 'A'
+  if (score >= 80) return 'B'
+  if (score >= 70) return 'C'
+  if (score >= 60) return 'D'
+  return 'F'
+}
+
+/** Scores writing quality from SKILL.md structure — used for neutral/mixed skills. */
+export function scoreIntrinsicQuality(skillDir: string): number {
+  const skillMdPath = path.join(skillDir, 'SKILL.md')
+  if (!fs.existsSync(skillMdPath)) return 0
+
+  const raw = fs.readFileSync(skillMdPath, 'utf-8').replace(/\r\n/g, '\n')
+  let score = 0
+
+  if (/^name:\s*.+$/m.test(raw)) score += 20
+  if (/^description:\s*.+$/m.test(raw)) score += 20
+  if (/^#{1,3}\s+.+/m.test(raw)) score += 15
+  if (/```[\w-]*\n[\s\S]*?```/.test(raw)) score += 20
+  if (raw.length >= 100 && raw.length <= 10000) score += 15
+  if (/^[\s]*[-*]\s+.+/m.test(raw) || /^[\s]*\d+\.\s+.+/m.test(raw))
+    score += 10
+
+  return score
+}
+
+export function scoreSkill(
+  report: AlignmentReport,
+  skill: SkillIdentifiers,
+  repo: RepoReality,
+): SkillScore {
+  const kind = classifySkillKind(skill)
+  const intrinsicQuality = scoreIntrinsicQuality(skill.skillPath)
+  const intrinsicGrade = toGrade(intrinsicQuality)
+  const freshness = computeFreshness(report)
+
+  if (kind === 'neutral') {
+    return {
+      kind,
+      overall: null,
+      grade: null,
+      breakdown: {
+        alignment: null,
+        coverage: null,
+        freshness,
+        specificity: null,
+      },
+      intrinsicQuality,
+      intrinsicGrade,
+    }
+  }
+
+  const alignment = report.alignmentScore
+  const coverage = computeCoverage(skill, repo)
+  const specificity = computeSpecificity(report)
+
+  const breakdown: ScoreBreakdown = {
+    alignment,
+    coverage,
+    freshness,
+    specificity,
+  }
+
+  // Mixed skills: down-weight coverage (half the normal weight, redistributed to alignment).
+  const coverageWeight =
+    kind === 'mixed' ? SCORE_WEIGHTS.coverage * 0.5 : SCORE_WEIGHTS.coverage
+  const alignmentBoost =
+    kind === 'mixed' ? SCORE_WEIGHTS.coverage * 0.5 : 0
+
+  const overall = Math.round(
+    (SCORE_WEIGHTS.alignment + alignmentBoost) * alignment * 100 +
+      coverageWeight * coverage * 100 +
+      SCORE_WEIGHTS.freshness * freshness * 100 +
+      SCORE_WEIGHTS.specificity * specificity * 100,
+  )
+
+  return {
+    kind,
+    overall,
+    grade: toGrade(overall),
+    breakdown,
+    intrinsicQuality,
+    intrinsicGrade,
+  }
+}
