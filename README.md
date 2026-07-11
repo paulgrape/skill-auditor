@@ -2,6 +2,18 @@
 
 Audit Agent Skills (`SKILL.md`) against the reality of the project they are installed in. Score alignment, detect drift, find coverage gaps, and suggest fixes for an agentic improvement loop.
 
+## Why this matters — loop engineering
+
+Skills are the memory an agent brings to your codebase. When they drift from reality, the agent confidently applies stale patterns. `skill-auditor` closes that loop:
+
+- **Set a target, optimize toward it.** Every command emits a machine-readable `--json` score. An agent runs `audit`, reads `suggestions`, edits the skill, and re-runs until `score.overall` stops rising — a measurable optimization loop, not a one-shot check. This is the core of a loop-engineering workflow: a concrete objective the agent can hill-climb.
+- **Ground truth, not vibes.** Scores come from the repo's actual `package.json` deps and imported specifiers, so "better" means "closer to how this project really works."
+- **Great for scheduled audits.** On fast-changing projects, skills rot quietly as dependencies and patterns shift. Run `skill-auditor` on a schedule (cron, CI, or a Cursor automation) with `gaps --fail-on-gap` so drift and missing coverage surface automatically instead of at the next incident.
+
+## Scope
+
+Currently supports **frontend apps only** — the stack taxonomy and `--checklist frontend` target JS/TS React/Next.js projects (routing, state, data-fetching, validation, styling, testing, forms, orm-db), plus the Website Specification checks. Other ecosystems (backend, mobile, data) are not covered yet.
+
 ## Install
 
 Run the CLI directly with no install:
