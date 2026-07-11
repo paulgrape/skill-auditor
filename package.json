@@ -27,9 +27,6 @@
     "prepublishOnly": "npm test",
     "test": "npm run build && node scripts/test.mjs"
   },
-  "publishConfig": {
-    "provenance": true
-  },
   "keywords": [
     "agent-skills",
     "agents",
