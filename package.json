@@ -24,17 +24,37 @@
   "scripts": {
     "build": "tsc",
     "prepare": "tsc",
+    "prepublishOnly": "npm test",
     "test": "npm run build && node scripts/test.mjs"
+  },
+  "publishConfig": {
+    "provenance": true
   },
   "keywords": [
     "agent-skills",
+    "agents",
+    "ai-agent",
+    "skills",
+    "skill-md",
+    "cursor",
+    "claude",
+    "codex",
+    "alignment",
+    "drift",
+    "stack",
     "audit",
     "cli",
-    "ast",
-    "drift"
+    "frontend",
+    "react",
+    "nextjs",
+    "ast"
   ],
-  "author": "paulgrape",
-  "license": "ISC",
+  "author": {
+    "name": "Pavel Vinogradov",
+    "email": "vin.pavel13@gmail.com",
+    "url": "https://github.com/paulgrape"
+  },
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "commander": "^15.0.0",

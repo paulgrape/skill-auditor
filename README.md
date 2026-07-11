@@ -1,6 +1,12 @@
 # skill-auditor
 
+[![npm version](https://img.shields.io/npm/v/skill-auditor)](https://www.npmjs.com/package/skill-auditor)
+[![CI](https://github.com/paulgrape/skill-auditor/actions/workflows/ci.yml/badge.svg)](https://github.com/paulgrape/skill-auditor/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/skill-auditor)](https://github.com/paulgrape/skill-auditor/blob/main/LICENSE)
+
 Audit Agent Skills (`SKILL.md`) against the reality of the project they are installed in. Score alignment, detect drift, find coverage gaps, and suggest fixes for an agentic improvement loop.
+
+> **This is a quality tool, not a security scanner.** `skill-auditor` optimizes and upgrades your skills — it measures how well they match your repo's actual dependencies and patterns, then guides you to improve them. It does **not** check skills for prompt injection, malware, or credential leaks (tools like `skill-audit` do that). Use it to keep skills accurate and useful, not to vet them for safety.
 
 ## Why this matters — loop engineering
 
@@ -12,7 +18,40 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 
 ## Scope
 
-Currently supports **frontend apps only** — the stack taxonomy and `--checklist frontend` target JS/TS React/Next.js projects (routing, state, data-fetching, validation, styling, testing, forms, orm-db), plus the Website Specification checks. Other ecosystems (backend, mobile, data) are not covered yet.
+### Covered today
+
+**Frontend web apps (JS/TS)** — the core audit loop targets React/Next.js-style projects. Ground truth comes from `package.json` dependencies and import usage scanned across `*.{ts,tsx,js,jsx}` source files.
+
+| Area | What is checked |
+|------|-----------------|
+| **Languages** | JavaScript, TypeScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) |
+| **Frameworks** | React ecosystem; **Next.js** (including Pages Router → App Router drift detection) |
+| **Routing** | `next`, `react-router`, `@tanstack/react-router`, `wouter`, … |
+| **State** | `zustand`, `redux`, `jotai`, `recoil`, `mobx`, `valtio`, … |
+| **Data fetching** | `swr`, `@tanstack/react-query`, Apollo, `urql`, … |
+| **Forms & validation** | `react-hook-form`, `formik`, `zod`, `yup`, `valibot`, … |
+| **Styling** | `tailwindcss`, `styled-components`, Emotion, Sass, `vanilla-extract`, … |
+| **Testing** | `vitest`, `jest`, Testing Library, Cypress, Playwright |
+| **ORM / DB** | `drizzle-orm`, `prisma`, `typeorm`, `kysely`, … (detected when present) |
+| **Component libs** | Radix, MUI, Ant Design, Chakra, shadcn, … |
+
+**Checklists:**
+
+- `--checklist frontend` — must-have stack categories: routing, state, data-fetching, validation, styling, testing
+- `--checklist website` — [Website Specification](https://specification.website) domains (foundations, SEO, accessibility, security, performance, privacy, resilience, i18n, agent-readiness)
+- `spec-check` — static compliance scan for HTML head, public assets, header config, routes (opt-in)
+
+**Skill kinds:** technical skills (package/API references) get full alignment scoring; neutral skills (tone/style, no tech refs) get intrinsic quality scoring only.
+
+### Planned
+
+- **More frontend frameworks** — Vue, Svelte, Astro, Remix, and broader taxonomy coverage
+- **Prose analysis** — score and improve the natural-language parts of skills (clarity, structure, actionability), not just code references
+- **Backend** — Node/Python/Go APIs, auth, ORMs, queues, and service patterns
+- **System & DevOps** — infra, CI/CD, containers, observability, deployment targets
+- **Data science** — notebooks, ML libraries, pipelines, and experiment tooling
+
+Contributions to the taxonomy ([`src/taxonomy.ts`](src/taxonomy.ts)) are welcome via PR.
 
 ## Install
 
@@ -100,6 +139,8 @@ skill-auditor spec-check --project . --priority required
 ```
 
 Statically scans the project (document head, public assets, header config, routes) against a curated subset of the [Website Specification](https://specification.website). Each item reports `pass`, `fail`, or `skip` — items that need a live URL or runtime audit (HTTPS, HSTS, Core Web Vitals, colour contrast, cookie-consent UX) are always `skip`. Exit code is `1` when any item fails.
+
+> **Not run by default.** `spec-check` (and the `--checklist website` domains) is opt-in. The default audit loop covers technical, package-backed skills only; run `spec-check` explicitly when you want Website Specification compliance.
 
 ### `list` / `audit-all` — discover and batch-audit
 
