@@ -1,6 +1,6 @@
 {
   "name": "skill-auditor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Audit imported Agent Skills (SKILL.md) against the reality of the project they are installed in.",
   "bin": {
     "skill-auditor": "dist/cli.js"

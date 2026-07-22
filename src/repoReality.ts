@@ -62,6 +62,7 @@ function trimExample(text: string): string {
 
 interface ImportScanResult {
   usedImports: Record<string, Set<string>>
+  usedIdentifiers: Record<string, Set<string>>
   importEvidence: Record<string, ImportEvidence[]>
 }
 
@@ -83,8 +84,16 @@ function scanImportUsage(projectRoot: string): ImportScanResult {
     skipAddingFilesFromTsConfig: true,
   })
   const usedImports: Record<string, Set<string>> = {}
+  const usedIdentifiers: Record<string, Set<string>> = {}
   const importEvidence: Record<string, ImportEvidence[]> = {}
   const seenEvidence = new Set<string>()
+
+  const recordIdentifier = (specifier: string, identifier: string) => {
+    const topLevel = topLevelPackage(specifier)
+    if (!topLevel || !identifier) return
+    if (!usedIdentifiers[topLevel]) usedIdentifiers[topLevel] = new Set()
+    usedIdentifiers[topLevel].add(identifier)
+  }
 
   const record = (specifier: string, file: string, example?: string) => {
     const topLevel = topLevelPackage(specifier)
@@ -120,11 +129,19 @@ function scanImportUsage(projectRoot: string): ImportScanResult {
     }
 
     for (const decl of source.getImportDeclarations()) {
-      record(
-        decl.getModuleSpecifierValue(),
-        file,
-        decl.getText().trim(),
-      )
+      const specifier = decl.getModuleSpecifierValue()
+      record(specifier, file, decl.getText().trim())
+
+      // Record which identifiers the project actually imports from this
+      // package — the source names (not local aliases), so skill examples can
+      // be verified against real repo usage.
+      for (const named of decl.getNamedImports()) {
+        recordIdentifier(specifier, named.getName())
+      }
+      const defaultImport = decl.getDefaultImport()
+      if (defaultImport) recordIdentifier(specifier, defaultImport.getText())
+      const namespaceImport = decl.getNamespaceImport()
+      if (namespaceImport) recordIdentifier(specifier, namespaceImport.getText())
     }
     for (const decl of source.getExportDeclarations()) {
       const spec = decl.getModuleSpecifierValue()
@@ -142,7 +159,7 @@ function scanImportUsage(projectRoot: string): ImportScanResult {
     }
   }
 
-  return { usedImports, importEvidence }
+  return { usedImports, usedIdentifiers, importEvidence }
 }
 
 function scanFileExtensions(projectRoot: string): Set<string> {
@@ -159,10 +176,12 @@ function scanFileExtensions(projectRoot: string): Set<string> {
 }
 
 export function buildRepoReality(projectRoot: string): RepoReality {
-  const { usedImports, importEvidence } = scanImportUsage(projectRoot)
+  const { usedImports, usedIdentifiers, importEvidence } =
+    scanImportUsage(projectRoot)
   return {
     declaredDeps: readDeclaredDeps(projectRoot),
     usedImports,
+    usedIdentifiers,
     importEvidence,
     fileExtensions: scanFileExtensions(projectRoot),
   }

@@ -51,11 +51,11 @@ function formatScoreBlock(score: SkillScore): string[] {
       `  alignment:   ${Math.round((score.breakdown.alignment ?? 0) * 100)}%`,
     )
     lines.push(
-      `  coverage:    ${Math.round((score.breakdown.coverage ?? 0) * 100)}%`,
+      `  specificity: ${Math.round((score.breakdown.specificity ?? 0) * 100)}%`,
     )
     lines.push(`  freshness:   ${Math.round(score.breakdown.freshness * 100)}%`)
     lines.push(
-      `  specificity: ${Math.round((score.breakdown.specificity ?? 0) * 100)}%`,
+      `  focus:       ${Math.round((score.breakdown.focus ?? 0) * 100)}%`,
     )
     lines.push(
       `Quality:   ${score.intrinsicQuality}/100 (${score.intrinsicGrade})`,

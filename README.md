@@ -12,8 +12,9 @@ Audit Agent Skills (`SKILL.md`) against the reality of the project they are inst
 
 Skills are the memory an agent brings to your codebase. When they drift from reality, the agent confidently applies stale patterns. `skill-auditor` closes that loop:
 
-- **Set a target, optimize toward it.** Every command emits a machine-readable `--json` score. An agent runs `audit`, reads `suggestions`, edits the skill, and re-runs until `score.overall` stops rising — a measurable optimization loop, not a one-shot check. This is the core of a loop-engineering workflow: a concrete objective the agent can hill-climb.
-- **Ground truth, not vibes.** Scores come from the repo's actual `package.json` deps and imported specifiers, so "better" means "closer to how this project really works."
+- **Set a target, optimize toward it.** Every command emits a machine-readable `--json` score. An agent runs `audit`, reads `suggestions`, fixes each finding substantively, and re-runs to confirm the findings are gone — a measurable improvement loop, not a one-shot check.
+- **Ground truth, not vibes.** Scores come from the repo's actual `package.json` deps, imported specifiers, and the identifiers the project really imports from each package, so "better" means "closer to how this project really works."
+- **Gaming-resistant by design.** The metric is open, so it is built so that maxing it out requires genuinely good content: only references demonstrated in working code count fully, examples are cross-verified against the repo's real API usage, and stuffing patterns (name-drops without examples, unused import lines, pasted dependency lists, same-category padding) are detected as `metric-stuffing` findings that cap the score at 60.
 - **Great for scheduled audits.** On fast-changing projects, skills rot quietly as dependencies and patterns shift. Run `skill-auditor` on a schedule (cron, CI, or a Cursor automation) with `gaps --fail-on-gap` so drift and missing coverage surface automatically instead of at the next incident.
 
 ## Scope
@@ -100,10 +101,12 @@ skill-auditor audit ./my-skill --project . --json
 
 | Dimension | Weight | What it measures |
 |-----------|--------|------------------|
-| alignment | 40% | Package/API references that match the project |
-| coverage | 30% | How many of the project's stack categories the skill covers |
+| alignment | 45% | Package/API references that match the project (unknown when nothing is scorable — vague skills don't get a free 100%) |
+| specificity | 25% | Substantiated depth: matched references weighted by how real they are — demonstrated usage counts fully, an idle import line counts near zero, a bare inline mention counts a quarter; references verified against the repo's actual imports earn a bonus; diminishing returns, so padding doesn't pay |
 | freshness | 20% | Penalty for deprecated APIs the project has moved past |
-| specificity | 10% | Whether the skill has enough concrete references (anti-vague) |
+| focus | 10% | Whether the skill stays within 1–2 stack categories — one concern per skill; portfolio-wide coverage is `gaps`'s job, not any single skill's |
+
+There is deliberately no per-skill coverage dimension: rewarding one skill for touching many categories incentivizes package stuffing. Skills flagged with `metric-stuffing` findings are capped at 60 regardless of the dimensions.
 
 **Neutral skills** (no tech references, e.g. tone/style skills): repo alignment is `N/A`. Only an intrinsic quality score (0–100) is reported based on structure, frontmatter, examples, and clarity.
 
@@ -160,11 +163,13 @@ skill-auditor extract ./my-skill
 
 ## Agent loop
 
-Run audit with `--json`, read `suggestions`, edit the skill, re-run until `score.overall` stops rising:
+Run audit with `--json`, read `suggestions`, fix each finding substantively (rewrite the affected section with a real, repo-grounded example — not a package-name swap), and re-run to confirm the findings are gone:
 
 ```bash
 skill-auditor audit ./my-skill --project . --json
 ```
+
+Fixes that only chase the number don't work: name-drops, unused imports, and dependency-list dumps trigger `metric-stuffing` findings that cap the score, and invented APIs surface as `unverified-api` findings pointing at what the repo actually imports.
 
 ## Starter templates
 

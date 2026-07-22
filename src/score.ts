@@ -1,11 +1,16 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { PACKAGE_TO_CATEGORY } from './taxonomy.js'
+import { repoHasPackage } from './diff.js'
 import {
   FRESHNESS_PENALTY,
   MIXED_SKILL_THRESHOLD,
+  PACKAGE_TO_CATEGORY,
   SCORE_WEIGHTS,
   SPECIFICITY_SATURATION,
+  STUFFING_SCORE_CAP,
+  SUBSTANTIATION_WEIGHTS,
+  UNSUBSTANTIATED_PROSE_MULTIPLIER,
+  VERIFIED_REFERENCE_BONUS,
 } from './taxonomy.js'
 import type {
   AlignmentReport,
@@ -29,19 +34,6 @@ export function classifySkillKind(skill: SkillIdentifiers): SkillKind {
   return 'technical'
 }
 
-function repoCategories(repo: RepoReality): Set<string> {
-  const cats = new Set<string>()
-  const pkgs = new Set([
-    ...Object.keys(repo.declaredDeps),
-    ...Object.keys(repo.usedImports),
-  ])
-  for (const pkg of pkgs) {
-    const cat = PACKAGE_TO_CATEGORY[pkg]
-    if (cat) cats.add(cat)
-  }
-  return cats
-}
-
 function skillCategories(skill: SkillIdentifiers): Set<string> {
   const cats = new Set<string>()
   for (const pkg of skill.packages) {
@@ -51,15 +43,16 @@ function skillCategories(skill: SkillIdentifiers): Set<string> {
   return cats
 }
 
-function computeCoverage(skill: SkillIdentifiers, repo: RepoReality): number {
-  const repoCats = repoCategories(repo)
-  if (repoCats.size === 0) return 1
-  const skillCats = skillCategories(skill)
-  let matched = 0
-  for (const cat of repoCats) {
-    if (skillCats.has(cat)) matched++
-  }
-  return matched / repoCats.size
+/**
+ * Focus: a skill should stay within 1-2 taxonomy categories. Spreading one
+ * skill across many categories is either a paste of the dependency list or a
+ * mega-skill — both are worse than focused, per-concern skills. Portfolio
+ * coverage across categories is measured by the `gaps` command, NOT here.
+ */
+function computeFocus(skill: SkillIdentifiers): number {
+  const cats = skillCategories(skill).size
+  if (cats <= 2) return 1
+  return 2 / cats
 }
 
 function computeFreshness(report: AlignmentReport): number {
@@ -69,11 +62,35 @@ function computeFreshness(report: AlignmentReport): number {
   return Math.max(0, 1 - deprecatedCount * FRESHNESS_PENALTY)
 }
 
-function computeSpecificity(report: AlignmentReport): number {
-  return Math.min(
-    1,
-    report.scorableReferenceCount / SPECIFICITY_SATURATION,
-  )
+/**
+ * Specificity = substantiated depth of the references that actually match the
+ * repo. Each matched package contributes weight by substantiation tier
+ * (demonstrated usage > idle import > bare mention), halved when its section
+ * lacks explanatory prose, with a bonus when the demonstrated identifiers are
+ * verified against real repo usage. Diminishing returns (sqrt): the sixth
+ * reference is worth much less than the first, so padding doesn't pay.
+ *
+ * Only matched references count — stuffing wrong or unknown packages adds
+ * nothing here (and hurts alignment instead).
+ */
+function computeSpecificity(
+  skill: SkillIdentifiers,
+  repo: RepoReality,
+  report: AlignmentReport,
+): number {
+  const verified = new Set(report.verifiedPackages)
+  let weightedSum = 0
+
+  for (const ref of Object.values(skill.packageRefs)) {
+    if (!repoHasPackage(ref.packageName, repo)) continue
+
+    let weight: number = SUBSTANTIATION_WEIGHTS[ref.substantiation]
+    if (!ref.substantiatedByProse) weight *= UNSUBSTANTIATED_PROSE_MULTIPLIER
+    if (verified.has(ref.packageName)) weight += VERIFIED_REFERENCE_BONUS
+    weightedSum += weight
+  }
+
+  return Math.min(1, Math.sqrt(weightedSum / SPECIFICITY_SATURATION))
 }
 
 function toGrade(score: number): string {
@@ -120,7 +137,7 @@ export function scoreSkill(
       grade: null,
       breakdown: {
         alignment: null,
-        coverage: null,
+        focus: null,
         freshness,
         specificity: null,
       },
@@ -130,28 +147,27 @@ export function scoreSkill(
   }
 
   const alignment = report.alignmentScore
-  const coverage = computeCoverage(skill, repo)
-  const specificity = computeSpecificity(report)
+  const focus = computeFocus(skill)
+  const specificity = computeSpecificity(skill, repo, report)
 
   const breakdown: ScoreBreakdown = {
     alignment,
-    coverage,
+    focus,
     freshness,
     specificity,
   }
 
-  // Mixed skills: down-weight coverage (half the normal weight, redistributed to alignment).
-  const coverageWeight =
-    kind === 'mixed' ? SCORE_WEIGHTS.coverage * 0.5 : SCORE_WEIGHTS.coverage
-  const alignmentBoost =
-    kind === 'mixed' ? SCORE_WEIGHTS.coverage * 0.5 : 0
-
-  const overall = Math.round(
-    (SCORE_WEIGHTS.alignment + alignmentBoost) * alignment * 100 +
-      coverageWeight * coverage * 100 +
+  let overall = Math.round(
+    SCORE_WEIGHTS.alignment * alignment * 100 +
+      SCORE_WEIGHTS.specificity * specificity * 100 +
       SCORE_WEIGHTS.freshness * freshness * 100 +
-      SCORE_WEIGHTS.specificity * specificity * 100,
+      SCORE_WEIGHTS.focus * focus * 100,
   )
+
+  // Metric-stuffing hard cap: a skill flagged for gaming patterns cannot
+  // score above the cap no matter how the dimensions add up.
+  const stuffed = report.findings.some(f => f.kind === 'metric-stuffing')
+  if (stuffed) overall = Math.min(overall, STUFFING_SCORE_CAP)
 
   return {
     kind,
