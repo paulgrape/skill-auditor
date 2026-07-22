@@ -17,10 +17,31 @@ export interface RepoReality {
   /** Package name -> set of specific import specifiers actually used in source
    *  e.g. "next" -> Set{"next/navigation", "next/router"} */
   usedImports: Record<string, Set<string>>
+  /** Package name -> identifiers actually imported from it in project source
+   *  e.g. "next" -> Set{"useRouter"}. Used to verify skill examples against
+   *  how the repo really uses each library. */
+  usedIdentifiers: Record<string, Set<string>>
   /** Package name -> concrete import usages with file paths and examples */
   importEvidence: Record<string, ImportEvidence[]>
   /** Distinct file extensions found, as a weak signal of project type (tsx, vue, svelte...) */
   fileExtensions: Set<string>
+}
+
+/**
+ * How strongly a package reference is backed by real content in the skill.
+ * - 'usage':   fenced code imports the package AND uses the imported bindings
+ * - 'fenced':  fenced code imports the package but bindings go unused (or have none)
+ * - 'mention': the package only appears as an inline-code mention, no example
+ */
+export type ReferenceSubstantiation = 'usage' | 'fenced' | 'mention'
+
+/** Per-package substantiation record for a skill reference. */
+export interface PackageReference {
+  packageName: string
+  /** Best substantiation tier observed across the skill */
+  substantiation: ReferenceSubstantiation
+  /** True when at least one section referencing this package carries enough explanatory prose */
+  substantiatedByProse: boolean
 }
 
 /**
@@ -37,6 +58,12 @@ export interface SkillIdentifiers {
   importSpecifiers: Set<string>
   /** Bare identifiers that look like API/function calls, e.g. "getServerSideProps" */
   apiCalls: Set<string>
+  /** Package name -> substantiation record (how real the reference is) */
+  packageRefs: Record<string, PackageReference>
+  /** Package name -> identifiers the skill imports from it, e.g. "next" -> {"useRouter"} */
+  importedIdentifiers: Record<string, Set<string>>
+  /** Import statements across all snippets whose bindings are never used below them */
+  unusedImportCount: number
 }
 
 export type DriftSeverity = 'info' | 'warning' | 'critical'
@@ -48,6 +75,8 @@ export interface DriftFinding {
     | 'category-conflict'
     | 'deprecated-api'
     | 'unused-reference'
+    | 'unverified-api'
+    | 'metric-stuffing'
   message: string
   skillReference: string
   repoReality?: string
@@ -57,10 +86,13 @@ export interface AlignmentReport {
   skillName: string
   skillPath: string
   /** |skill_references ∩ repo_reality| / |skill_references| , restricted to identifiers
-   *  the skill scoring engine could actually classify (see taxonomy) */
+   *  the skill scoring engine could actually classify (see taxonomy).
+   *  Falls back to a neutral prior (not 1) when there is nothing scorable. */
   alignmentScore: number
   scorableReferenceCount: number
   matchedReferenceCount: number
+  /** Matched packages whose demonstrated identifiers also appear in repo source */
+  verifiedPackages: string[]
   findings: DriftFinding[]
 }
 
@@ -68,8 +100,10 @@ export type SkillKind = 'technical' | 'mixed' | 'neutral'
 
 export interface ScoreBreakdown {
   alignment: number | null
-  coverage: number | null
+  /** How focused the skill is on 1-2 taxonomy categories (portfolio coverage lives in `gaps`) */
+  focus: number | null
   freshness: number
+  /** Substantiated depth: matched references weighted by how real their content is */
   specificity: number | null
 }
 

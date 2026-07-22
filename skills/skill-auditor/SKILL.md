@@ -8,6 +8,15 @@ disable-model-invocation: true
 
 Use the `skill-auditor` CLI to measure skill quality against repo reality, then create or fix skills until gaps shrink.
 
+## Ground rules — improve skills, not scores
+
+The score is a proxy. The deliverable is a skill that teaches this repo's real patterns. Hard rules:
+
+- **Fix findings substantively.** Every fix must change what the skill *teaches* — a working example, a correct API, an accurate file path. Never add, rename, or shuffle references just to move a number.
+- **Do not reverse-engineer the auditor.** Do not read the skill-auditor source, `dist/` output, or scoring weights to find shortcuts. The findings and `suggestions` in the JSON output are the intended and only interface.
+- **The auditor detects gaming.** Bare package name-drops, import lines whose bindings are never used, pasted dependency lists, and same-category padding produce `metric-stuffing` findings that cap the score at 60. APIs the repo never uses produce `unverified-api` findings. The highest-scoring path is genuinely repo-grounded content.
+- **When a finding is wrong, say so.** If a suggestion doesn't fit (e.g. the skill intentionally recommends a library the repo should adopt), tell the user instead of contorting the skill to silence the finding.
+
 ## Prerequisites
 
 No install required. Throughout this skill, `skill-auditor <command>` means either:
@@ -100,11 +109,11 @@ The bundled `templates/website-*` skills already do this. When `WEBSITE_SCOPE=ye
 For each result where `score.overall < 70` or critical findings exist:
 
 1. Read `suggestions` — each maps a finding to a concrete fix
-2. Edit the skill's `SKILL.md`: swap deprecated APIs, replace wrong stack (e.g. `redux` → repo's actual state lib)
-3. Use packages/imports from `scan` output, not generic examples
-4. Re-run `skill-auditor audit <skillDir> --project $PROJECT --json` until score stops rising
+2. Edit the skill's `SKILL.md`: rewrite the affected sections around the repo's actual stack. Rewriting means a working example plus the prose explaining when and why — not a package-name swap
+3. Use packages/imports from `scan` output, not generic examples. Demonstrate APIs the repo actually imports (`unverified-api` findings list what the repo really uses)
+4. Re-run `skill-auditor audit <skillDir> --project $PROJECT --json` and confirm each finding you addressed is gone. Stop when findings are resolved — do not keep tweaking to squeeze out points
 
-Do not inject fake imports into neutral/behavioral skills just to raise alignment.
+Do not inject fake imports into neutral/behavioral skills just to raise alignment. Do not pad skills with extra references: unused imports, name-drops without examples, and dependency-list dumps are detected as `metric-stuffing` and cap the score at 60.
 
 ## Step 4 — Create gap skills
 
@@ -185,8 +194,8 @@ Pick bullets for the gap's `category` from the map below. Keep only items releva
 Rules for new gap skills:
 - `name`: lowercase, hyphens, max 64 chars
 - `description`: third person, WHAT + WHEN, include trigger terms
-- Every code block uses an import specifier from `usedImports` (no invented APIs)
-- Keep under 500 lines; one category per skill
+- Every code block uses an import specifier from `usedImports` (no invented APIs), and every import's bindings must be used in the snippet — idle import lines count as metric stuffing
+- Keep under 500 lines; one category per skill (skills spanning 3+ categories lose focus score)
 - Use forward-slash paths only
 - If a section has no repo evidence, write a short planning note instead of fabricating code
 
@@ -287,3 +296,5 @@ Always prefer repo scan over this table.
 - Do not use Pages Router APIs (`getServerSideProps`, `next/router`) when scan shows `next/navigation`
 - Do not create one mega-skill covering all gaps — one category per skill
 - Do not modify `~/.cursor/skills-cursor/` (Cursor built-in skills)
+- Do not optimize the score directly: no name-dropping packages without examples, no unused import lines, no pasting the dependency list, no adding references the skill doesn't explain. These are detected and cap the score
+- Do not read the skill-auditor source or dist to find scoring shortcuts — work only from findings and suggestions

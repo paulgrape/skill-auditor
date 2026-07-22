@@ -123,15 +123,23 @@ export const MUST_HAVE_CHECKLISTS: Record<string, string[]> = {
   ],
 }
 
-/** Weights for the four technical scoring dimensions (must sum to 1). */
+/**
+ * Weights for the four technical scoring dimensions (must sum to 1).
+ *
+ * Note: there is deliberately NO per-skill coverage dimension. Rewarding one
+ * skill for touching many categories incentivizes package stuffing and
+ * contradicts the "one category per skill" guidance. Portfolio coverage is
+ * measured by the `gaps` command instead. `focus` rewards the opposite:
+ * staying within 1-2 categories.
+ */
 export const SCORE_WEIGHTS = {
-  alignment: 0.4,
-  coverage: 0.3,
+  alignment: 0.45,
+  specificity: 0.25,
   freshness: 0.2,
-  specificity: 0.1,
+  focus: 0.1,
 } as const
 
-/** Reference count at which specificity score saturates at 1. */
+/** Weighted substantiation mass at which specificity saturates at 1 (sqrt curve). */
 export const SPECIFICITY_SATURATION = 5
 
 /** Penalty per deprecated-api critical finding applied to freshness. */
@@ -139,6 +147,50 @@ export const FRESHNESS_PENALTY = 0.5
 
 /** Total tech references below which a skill is classified mixed (not technical). */
 export const MIXED_SKILL_THRESHOLD = 3
+
+/**
+ * Substantiation weights: how much a matched reference contributes to
+ * specificity depending on how real its backing content is. A bare inline
+ * mention is worth a quarter of a demonstrated usage; an import statement
+ * whose bindings are never used is worth almost nothing (it's the cheapest
+ * stuffing move).
+ */
+export const SUBSTANTIATION_WEIGHTS = {
+  usage: 1.0,
+  fenced: 0.4,
+  mention: 0.25,
+} as const
+
+/** Multiplier applied when a reference's section lacks explanatory prose. */
+export const UNSUBSTANTIATED_PROSE_MULTIPLIER = 0.5
+
+/** Minimum prose words in a section for its references to count as explained. */
+export const PROSE_MIN_WORDS = 20
+
+/** Extra specificity weight for references verified against real repo usage. */
+export const VERIFIED_REFERENCE_BONUS = 0.5
+
+/** Alignment prior when a skill has zero scorable references (unknown, not perfect). */
+export const UNKNOWN_ALIGNMENT_PRIOR = 0.5
+
+/** Overall score is capped at this value when metric-stuffing is detected. */
+export const STUFFING_SCORE_CAP = 60
+
+/** Stuffing detector thresholds. */
+export const STUFFING_THRESHOLDS = {
+  /** Flag when the skill references at least this many packages... */
+  mentionHeavyMinPackages: 5,
+  /** ...and more than this fraction of them are inline mentions with no example. */
+  mentionHeavyRatio: 0.6,
+  /** Flag when this many import statements have bindings that are never used. */
+  unusedImports: 3,
+  /** Flag when a single taxonomy category has at least this many referenced packages. */
+  categoryPadding: 4,
+  /** Dep-list mirroring: project must declare at least this many deps... */
+  mirroringMinDeclaredDeps: 8,
+  /** ...and the skill must reference at least this fraction of them. */
+  mirroringRatio: 0.8,
+} as const
 
 export const DEPRECATED_API_RULES: DeprecatedApiRule[] = [
   {

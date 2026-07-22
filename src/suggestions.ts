@@ -1,22 +1,36 @@
 import type { DriftFinding, SkillSuggestion } from './types.js'
 
+/**
+ * Suggestions demand substance, not string swaps. The audit loop is only
+ * useful if acting on a suggestion produces a genuinely better skill — so
+ * every suggestion asks for repo-grounded content (real examples, real file
+ * paths, prose that explains), never "add reference X to raise the score".
+ */
 function suggestForFinding(finding: DriftFinding): string {
   switch (finding.kind) {
     case 'category-conflict':
       return finding.repoReality
-        ? `Replace "${finding.skillReference}" with "${finding.repoReality}" to match the project's stack.`
-        : `Remove or replace "${finding.skillReference}" with the library the project actually uses.`
+        ? `Rewrite this part of the skill around "${finding.repoReality}" — the library the project actually uses. Replace the "${finding.skillReference}" example with a working snippet that mirrors how the repo uses "${finding.repoReality}" (check \`scan --json\` importEvidence for real files to copy patterns from). Do not just swap the package name.`
+        : `Remove or replace "${finding.skillReference}" with the library the project actually uses, including a real usage example.`
 
     case 'missing-dependency':
-      return `Either add "${finding.skillReference}" to the project, or remove references to it from the skill if it's not relevant.`
+      return `The project has no library for what "${finding.skillReference}" does. Either this skill covers a concern the project doesn't have (drop the section), or the recommendation is intentional (keep it, but say explicitly that the project would need to adopt "${finding.skillReference}" first).`
 
     case 'deprecated-api':
       return finding.repoReality
-        ? `Update "${finding.skillReference}" to use "${finding.repoReality}" (or equivalent App Router API).`
+        ? `Rewrite the example that uses "${finding.skillReference}" with the "${finding.repoReality}" equivalent, matching how the repo's own files use it — not just a renamed import.`
         : `Remove or modernize the deprecated API "${finding.skillReference}".`
 
     case 'unused-reference':
-      return `Remove the unused reference to "${finding.skillReference}", or add context explaining when it applies.`
+      return `Remove the unused reference to "${finding.skillReference}", or add context explaining when it applies. Do not keep it just to look specific.`
+
+    case 'unverified-api':
+      return finding.repoReality
+        ? `The skill demonstrates APIs the project never uses (${finding.skillReference}). Rebuild the example around what the repo actually imports (${finding.repoReality}) so the skill teaches this project's real patterns.`
+        : `The skill demonstrates APIs the project never uses (${finding.skillReference}). Rebuild the example around the repo's real usage.`
+
+    case 'metric-stuffing':
+      return `This looks like score optimization, not skill improvement: ${finding.message} The score is capped until this is fixed. Cut the padding and write substantive content — one concern, real repo-grounded examples, prose that explains when and why.`
 
     default:
       return finding.message
