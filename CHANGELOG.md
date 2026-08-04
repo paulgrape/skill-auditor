@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.1
+
+### Fixed
+
+- The bundled `skill-auditor` skill instructed commands the CLI rejected:
+  `scan <path> --json` failed with `unknown option '--json'` and
+  `spec-check <path> --json` with `too many arguments`. The CLI now accepts
+  `--json` on `scan` (its output was always JSON) and an optional positional
+  project path on `spec-check` (equivalent to `--project`).
+- Removed a dead full-tree file scan: `RepoReality.fileExtensions` was
+  computed by globbing every file in the project but never consumed. Scans
+  are faster on large repos; the field is gone from `scan --json` output.
+
+### Added
+
+- Anti-drift test: every `skill-auditor` command documented in the bundled
+  skill's SKILL.md is now executed against the built CLI in `npm test`, so
+  the skill and the CLI can no longer drift apart silently.
+
 ## 1.1.0
 
 Anti-gaming scoring redesign. The metric is open by design, so it is now built
