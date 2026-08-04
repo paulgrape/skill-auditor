@@ -23,8 +23,6 @@ export interface RepoReality {
   usedIdentifiers: Record<string, Set<string>>
   /** Package name -> concrete import usages with file paths and examples */
   importEvidence: Record<string, ImportEvidence[]>
-  /** Distinct file extensions found, as a weak signal of project type (tsx, vue, svelte...) */
-  fileExtensions: Set<string>
 }
 
 /**

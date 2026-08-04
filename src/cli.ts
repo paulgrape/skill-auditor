@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs'
 import { Command } from 'commander'
+import { readFileSync } from 'node:fs'
 import { buildAlignmentReport } from './diff.js'
 import {
   defaultSkillRoots,
@@ -189,6 +189,7 @@ program
 program
   .command('scan')
   .argument('[path]', 'project root to scan', '.')
+  .option('--json', 'emit machine-readable JSON (scan output is always JSON)')
   .description('Print the RepoReality (declared deps + used imports) as JSON')
   .action((path: string) => {
     printJson(buildRepoReality(path))
@@ -386,6 +387,7 @@ const STATUS_MARK: Record<string, string> = {
 
 program
   .command('spec-check')
+  .argument('[path]', 'project root to analyze (same as --project)')
   .option('-p, --project <path>', 'project root to analyze', '.')
   .option(
     '-P, --priority <level>',
@@ -396,8 +398,14 @@ program
     'Statically check the project against the Website Specification (specification.website)',
   )
   .action(
-    (opts: { project: string; priority?: string; json?: boolean }) => {
-      if (opts.priority && !SPEC_PRIORITIES.includes(opts.priority as SpecPriority)) {
+    (
+      inputPath: string | undefined,
+      opts: { project: string; priority?: string; json?: boolean },
+    ) => {
+      if (
+        opts.priority &&
+        !SPEC_PRIORITIES.includes(opts.priority as SpecPriority)
+      ) {
         process.stderr.write(
           `Invalid --priority "${opts.priority}". Expected one of: ${SPEC_PRIORITIES.join(', ')}\n`,
         )
@@ -405,7 +413,7 @@ program
       }
 
       const report = runSpecCompliance(
-        opts.project,
+        inputPath ?? opts.project,
         opts.priority as SpecPriority | undefined,
       )
 

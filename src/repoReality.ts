@@ -162,19 +162,6 @@ function scanImportUsage(projectRoot: string): ImportScanResult {
   return { usedImports, usedIdentifiers, importEvidence }
 }
 
-function scanFileExtensions(projectRoot: string): Set<string> {
-  const files = fg.sync(['**/*.*'], {
-    cwd: projectRoot,
-    ignore: DEFAULT_IGNORE,
-  })
-  const exts = new Set<string>()
-  for (const f of files) {
-    const ext = path.extname(f).replace('.', '')
-    if (ext) exts.add(ext)
-  }
-  return exts
-}
-
 export function buildRepoReality(projectRoot: string): RepoReality {
   const { usedImports, usedIdentifiers, importEvidence } =
     scanImportUsage(projectRoot)
@@ -183,6 +170,5 @@ export function buildRepoReality(projectRoot: string): RepoReality {
     usedImports,
     usedIdentifiers,
     importEvidence,
-    fileExtensions: scanFileExtensions(projectRoot),
   }
 }
