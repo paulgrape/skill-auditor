@@ -1,0 +1,9 @@
+{
+  "name": "@monorepo/app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "next": "^15.0.0",
+    "@tanstack/react-query": "^5.0.0"
+  }
+}

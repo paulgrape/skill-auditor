@@ -1,10 +1,11 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { repoHasPackage } from './diff.js'
+import { frontmatterString, parseFrontmatter } from './frontmatter.js'
 import {
+  categoriesForPackage,
   FRESHNESS_PENALTY,
   MIXED_SKILL_THRESHOLD,
-  PACKAGE_TO_CATEGORY,
   SCORE_WEIGHTS,
   SPECIFICITY_SATURATION,
   STUFFING_SCORE_CAP,
@@ -37,8 +38,7 @@ export function classifySkillKind(skill: SkillIdentifiers): SkillKind {
 function skillCategories(skill: SkillIdentifiers): Set<string> {
   const cats = new Set<string>()
   for (const pkg of skill.packages) {
-    const cat = PACKAGE_TO_CATEGORY[pkg]
-    if (cat) cats.add(cat)
+    for (const cat of categoriesForPackage(pkg)) cats.add(cat)
   }
   return cats
 }
@@ -107,10 +107,13 @@ export function scoreIntrinsicQuality(skillDir: string): number {
   if (!fs.existsSync(skillMdPath)) return 0
 
   const raw = fs.readFileSync(skillMdPath, 'utf-8').replace(/\r\n/g, '\n')
+  const { data: frontmatter } = parseFrontmatter(raw)
   let score = 0
 
-  if (/^name:\s*.+$/m.test(raw)) score += 20
-  if (/^description:\s*.+$/m.test(raw)) score += 20
+  // Scoped to frontmatter: `name:`/`description:` lines in the body (commonly
+  // inside example blocks) describe something else, not this skill.
+  if (frontmatterString(frontmatter, 'name')) score += 20
+  if (frontmatterString(frontmatter, 'description')) score += 20
   if (/^#{1,3}\s+.+/m.test(raw)) score += 15
   if (/```[\w-]*\n[\s\S]*?```/.test(raw)) score += 20
   if (raw.length >= 100 && raw.length <= 10000) score += 15

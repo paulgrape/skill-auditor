@@ -67,12 +67,35 @@ export const CATEGORY_TAXONOMY: Record<string, string[]> = {
   ],
 }
 
-/** Reverse index: package name -> category, built once at module load. */
-export const PACKAGE_TO_CATEGORY: Record<string, string> = Object.fromEntries(
-  Object.entries(CATEGORY_TAXONOMY).flatMap(([category, pkgs]) =>
-    pkgs.map(p => [p, category]),
-  ),
-)
+/**
+ * Reverse index: package name -> every category it belongs to, built once at
+ * module load. Packages legitimately span concerns — `@reduxjs/toolkit` is
+ * both state and data-fetching (RTK Query) — so this is a list, not a scalar.
+ */
+export const PACKAGE_TO_CATEGORIES: Record<string, string[]> = (() => {
+  const index: Record<string, string[]> = {}
+  for (const [category, pkgs] of Object.entries(CATEGORY_TAXONOMY)) {
+    for (const pkg of pkgs) {
+      index[pkg] = [...(index[pkg] ?? []), category]
+    }
+  }
+  return index
+})()
+
+/** Taxonomy categories a package belongs to; empty when unknown. */
+export function categoriesForPackage(pkg: string): string[] {
+  return PACKAGE_TO_CATEGORIES[pkg] ?? []
+}
+
+/** True when the taxonomy classifies this package at all. */
+export function isKnownPackage(pkg: string): boolean {
+  return pkg in PACKAGE_TO_CATEGORIES
+}
+
+/** True when the package belongs to the given taxonomy category. */
+export function packageInCategory(pkg: string, category: string): boolean {
+  return categoriesForPackage(pkg).includes(category)
+}
 
 export interface DeprecatedApiRule {
   framework: string

@@ -1,4 +1,8 @@
-import { MUST_HAVE_CHECKLISTS, PACKAGE_TO_CATEGORY } from './taxonomy.js'
+import {
+  categoriesForPackage,
+  MUST_HAVE_CHECKLISTS,
+  packageInCategory,
+} from './taxonomy.js'
 import { findSkillDirs } from './discoverSkills.js'
 import { extractSkillIdentifiers } from './skillIdentifiers.js'
 import type { GapFinding, GapReport, ImportEvidence, RepoReality } from './types.js'
@@ -13,8 +17,7 @@ function repoCategories(repo: RepoReality): string[] {
     ...Object.keys(repo.usedImports),
   ])
   for (const pkg of pkgs) {
-    const cat = PACKAGE_TO_CATEGORY[pkg]
-    if (cat) cats.add(cat)
+    for (const cat of categoriesForPackage(pkg)) cats.add(cat)
   }
   return [...cats].sort()
 }
@@ -22,10 +25,10 @@ function repoCategories(repo: RepoReality): string[] {
 function packagesForCategory(category: string, repo: RepoReality): string[] {
   const pkgs = new Set<string>()
   for (const pkg of Object.keys(repo.usedImports)) {
-    if (PACKAGE_TO_CATEGORY[pkg] === category) pkgs.add(pkg)
+    if (packageInCategory(pkg, category)) pkgs.add(pkg)
   }
   for (const pkg of Object.keys(repo.declaredDeps)) {
-    if (PACKAGE_TO_CATEGORY[pkg] === category) pkgs.add(pkg)
+    if (packageInCategory(pkg, category)) pkgs.add(pkg)
   }
   return [...pkgs].sort()
 }
@@ -68,8 +71,7 @@ function categoriesFromSkillDirs(skillDirs: string[]): Set<string> {
     try {
       const skill = extractSkillIdentifiers(dir)
       for (const pkg of skill.packages) {
-        const cat = PACKAGE_TO_CATEGORY[pkg]
-        if (cat) cats.add(cat)
+        for (const cat of categoriesForPackage(pkg)) cats.add(cat)
       }
       for (const cat of skill.categories) cats.add(cat)
     } catch {

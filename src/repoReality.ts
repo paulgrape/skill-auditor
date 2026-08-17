@@ -2,6 +2,8 @@ import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
 import { Project, SyntaxKind } from 'ts-morph'
+import { frontmatterList, parseSimpleYaml } from './frontmatter.js'
+import { topLevelPackage } from './packageNames.js'
 import type { ImportEvidence, RepoReality } from './types.js'
 
 const DEFAULT_IGNORE = [
@@ -18,23 +20,22 @@ const MAX_EVIDENCE_PER_PACKAGE = 5
 /** Max length for example snippets. */
 const MAX_EXAMPLE_LENGTH = 200
 
-/**
- * Reads package.json (deps + devDeps) for the "declared" side of ground truth.
- */
-function readDeclaredDeps(projectRoot: string): Record<string, string> {
-  const pkgPath = path.join(projectRoot, 'package.json')
-  if (!fs.existsSync(pkgPath)) return {}
+interface PackageJson {
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+  peerDependencies?: Record<string, string>
+  workspaces?: string[] | { packages?: string[] }
+}
 
-  let pkg: {
-    dependencies?: Record<string, string>
-    devDependencies?: Record<string, string>
-    peerDependencies?: Record<string, string>
-  }
+function readPackageJson(pkgPath: string): PackageJson | null {
   try {
-    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+    return JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
   } catch {
-    return {} // malformed package.json — treat as no declared deps
+    return null // missing or malformed — treat as no declared deps
   }
+}
+
+function depsOf(pkg: PackageJson): Record<string, string> {
   return {
     ...(pkg.dependencies ?? {}),
     ...(pkg.devDependencies ?? {}),
@@ -42,11 +43,61 @@ function readDeclaredDeps(projectRoot: string): Record<string, string> {
   }
 }
 
-function topLevelPackage(specifier: string): string {
-  if (!specifier || specifier.startsWith('.') || specifier.startsWith('/')) return ''
-  return specifier.startsWith('@')
-    ? specifier.split('/').slice(0, 2).join('/')
-    : specifier.split('/')[0]
+/**
+ * Workspace globs declared by the root package.json (npm/yarn) or
+ * pnpm-workspace.yaml. Returned as-is, without the trailing `/package.json`.
+ */
+function workspacePatterns(
+  projectRoot: string,
+  rootPkg: PackageJson | null,
+): string[] {
+  const declared = rootPkg?.workspaces
+  if (Array.isArray(declared)) return declared
+  if (declared?.packages) return declared.packages
+
+  const pnpmPath = path.join(projectRoot, 'pnpm-workspace.yaml')
+  if (!fs.existsSync(pnpmPath)) return []
+  try {
+    const yaml = parseSimpleYaml(fs.readFileSync(pnpmPath, 'utf-8'))
+    return frontmatterList(yaml, 'packages')
+  } catch {
+    return []
+  }
+}
+
+/** Turns a workspace glob into a manifest glob, preserving `!` exclusions. */
+function toManifestPattern(pattern: string): string {
+  const negated = pattern.startsWith('!')
+  const base = (negated ? pattern.slice(1) : pattern).replace(/\/+$/, '')
+  return `${negated ? '!' : ''}${base}/package.json`
+}
+
+/**
+ * Reads declared dependencies for the "declared" side of ground truth.
+ *
+ * In a monorepo the root package.json usually holds only tooling, while the
+ * stack a skill should align with lives in the workspace packages — so their
+ * dependencies are merged in too. Root declarations win on conflict, being
+ * the most authoritative statement about the project as a whole.
+ */
+function readDeclaredDeps(projectRoot: string): Record<string, string> {
+  const rootPkg = readPackageJson(path.join(projectRoot, 'package.json'))
+
+  const patterns = workspacePatterns(projectRoot, rootPkg)
+  const workspaceDeps: Record<string, string> = {}
+  if (patterns.length > 0) {
+    const manifests = fg.sync(patterns.map(toManifestPattern), {
+      cwd: projectRoot,
+      ignore: DEFAULT_IGNORE,
+      absolute: true,
+    })
+    for (const manifest of manifests) {
+      const pkg = readPackageJson(manifest)
+      if (pkg) Object.assign(workspaceDeps, depsOf(pkg))
+    }
+  }
+
+  return { ...workspaceDeps, ...(rootPkg ? depsOf(rootPkg) : {}) }
 }
 
 function toRelativePath(projectRoot: string, absolutePath: string): string {
