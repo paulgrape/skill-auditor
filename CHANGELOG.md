@@ -3,6 +3,61 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.0
+
+Correctness pass on what counts as a package and which category it belongs to,
+plus a CI gate. Scores can move for skills that import Node builtins or path
+aliases, reference multi-category packages, or keep their `name:`/
+`description:` outside the frontmatter.
+
+### Added
+
+- **`--min-score <n>` on `audit` and `audit-all`** — exits non-zero when any
+  scored skill falls below the threshold, and lists the offending skills and
+  their scores on stderr. Neutral skills are ignored (they have no alignment
+  score to gate on). Combines with `--fail-on`: either condition fails the run.
+  An out-of-range or non-numeric value exits `2`, so a typo in a CI config
+  fails loudly rather than silently disabling the gate.
+- **Monorepo support** — `declaredDeps` now merges the dependencies of every
+  workspace package, resolved from the root `package.json` `workspaces` field
+  (array or `{ packages: [...] }`) or from `pnpm-workspace.yaml`. Previously a
+  monorepo whose root manifest held only tooling looked like a project with no
+  stack at all. Root declarations still win on conflict. Side effect: with more
+  declared dependencies, the dependency-list-mirroring stuffing heuristic is
+  correctly harder to trigger in a monorepo.
+
+### Changed
+
+- **Node builtins and path aliases are no longer treated as npm packages.**
+  `node:fs`, bare `fs`/`path`/`crypto`, `#internal` subpath imports, and `@/…`
+  and `~/…` tsconfig aliases were counted as package references on both sides
+  of the audit, producing phantom `unused-reference` findings and inflating
+  reference counts. They are now excluded from `scan`'s `usedImports` and from
+  a skill's `packages` and `importSpecifiers`.
+- **Packages can belong to more than one taxonomy category.** The reverse index
+  was a `package -> category` map, so a package listed under two categories
+  silently kept only the last one — `@reduxjs/toolkit` lost its `state`
+  membership to `data-fetching`. It is now `package -> categories[]`, which
+  affects `focus` (a multi-category package fills more of the two-category
+  budget), conflict detection (a rival in any of its categories is a conflict),
+  and `gaps` coverage. A package still counts as one reference and produces at
+  most one finding, now naming every relevant category, e.g.
+  `Skill uses "@reduxjs/toolkit" (state/data-fetching); …`.
+- **Frontmatter is parsed, not pattern-matched.** A small dependency-free YAML
+  reader replaces the regexes used for `name:` and `categories:`, so block
+  scalars, quoted values, comments and the inline list form all work. Intrinsic
+  quality now credits `name:` and `description:` only when they are real
+  frontmatter keys — previously any such line anywhere in the document scored,
+  including inside example blocks that describe some other skill.
+
+### Internal
+
+- Tests moved from a single hand-rolled script to `node:test` under `test/`,
+  adding unit coverage for the scoring math, alignment findings, the
+  frontmatter parser, specifier filtering and workspace dependency merging. The
+  JSON helper no longer swallows stderr, so a CLI crash reports its own error
+  instead of surfacing as a JSON parse failure.
+
 ## 1.1.1
 
 ### Fixed

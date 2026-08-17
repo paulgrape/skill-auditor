@@ -158,6 +158,49 @@ function auditFailed(results: AuditResult[], failOn: DriftSeverity): boolean {
   )
 }
 
+/**
+ * Parses `--min-score`, exiting with code 2 on anything unusable so a typo in
+ * a CI config fails loudly instead of silently disabling the gate.
+ */
+function parseMinScore(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const value = Number.parseFloat(raw)
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    process.stderr.write(
+      `Invalid --min-score "${raw}". Expected a number between 0 and 100.\n`,
+    )
+    process.exit(2)
+  }
+  return value
+}
+
+/** Scored skills below the threshold. Neutral skills have no score to gate on. */
+function belowMinScore(
+  results: AuditResult[],
+  minScore: number | undefined,
+): AuditResult[] {
+  if (minScore === undefined) return []
+  return results.filter(
+    r => r.score.overall !== null && r.score.overall < minScore,
+  )
+}
+
+function reportMinScoreFailures(
+  failures: AuditResult[],
+  minScore: number,
+  json: boolean,
+): void {
+  if (failures.length === 0 || json) return
+  process.stderr.write(
+    `${failures.length} skill(s) below the --min-score threshold of ${minScore}:\n`,
+  )
+  for (const r of failures) {
+    process.stderr.write(
+      `  ${r.report.skillName} (${r.score.overall}/100) — ${r.report.skillPath}\n`,
+    )
+  }
+}
+
 function resolveRoots(
   userRoots: string[],
   opts: { defaults?: boolean; project?: string },
@@ -215,12 +258,21 @@ program
     'exit non-zero if a finding at/above this severity exists (info|warning|critical)',
     'critical',
   )
+  .option(
+    '-m, --min-score <n>',
+    'exit non-zero if any scored skill is below this 0-100 threshold',
+  )
   .option('--json', 'emit machine-readable JSON (score, findings, suggestions)')
   .description('Audit a skill or all skills under a root against the project')
   .action(
     (
       inputPath: string,
-      opts: { project: string; failOn: string; json?: boolean },
+      opts: {
+        project: string
+        failOn: string
+        minScore?: string
+        json?: boolean
+      },
     ) => {
       const failOn = opts.failOn as DriftSeverity
       if (!(failOn in SEVERITY_ORDER)) {
@@ -229,12 +281,20 @@ program
         )
         process.exit(2)
       }
+      const minScore = parseMinScore(opts.minScore)
 
       const repo = buildRepoReality(opts.project)
       const skillDirs = resolveSkillPath(inputPath)
       const results = runAudits(repo, skillDirs)
       printAuditResults(results, opts)
-      process.exit(auditFailed(results, failOn) ? 1 : 0)
+
+      const underMin = belowMinScore(results, minScore)
+      if (minScore !== undefined) {
+        reportMinScoreFailures(underMin, minScore, Boolean(opts.json))
+      }
+      process.exit(
+        auditFailed(results, failOn) || underMin.length > 0 ? 1 : 0,
+      )
     },
   )
 
@@ -276,6 +336,10 @@ program
     'exit non-zero if a finding at/above this severity exists (info|warning|critical)',
     'critical',
   )
+  .option(
+    '-m, --min-score <n>',
+    'exit non-zero if any scored skill is below this 0-100 threshold',
+  )
   .option('--json', 'emit machine-readable JSON')
   .description('Audit every skill found under the given roots')
   .action(
@@ -285,6 +349,7 @@ program
         project: string
         defaults?: boolean
         failOn: string
+        minScore?: string
         json?: boolean
       },
     ) => {
@@ -295,12 +360,20 @@ program
         )
         process.exit(2)
       }
+      const minScore = parseMinScore(opts.minScore)
 
       const repo = buildRepoReality(opts.project)
       const skillDirs = findSkillDirs(resolveRoots(roots, opts))
       const results = runAudits(repo, skillDirs)
       printAuditResults(results, opts)
-      process.exit(auditFailed(results, failOn) ? 1 : 0)
+
+      const underMin = belowMinScore(results, minScore)
+      if (minScore !== undefined) {
+        reportMinScoreFailures(underMin, minScore, Boolean(opts.json))
+      }
+      process.exit(
+        auditFailed(results, failOn) || underMin.length > 0 ? 1 : 0,
+      )
     },
   )
 

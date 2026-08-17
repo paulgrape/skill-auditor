@@ -1,6 +1,7 @@
 import {
+  categoriesForPackage,
   DEPRECATED_API_RULES,
-  PACKAGE_TO_CATEGORY,
+  packageInCategory,
   STUFFING_THRESHOLDS,
   UNKNOWN_ALIGNMENT_PRIOR,
 } from './taxonomy.js'
@@ -25,7 +26,7 @@ function repoPackagesInCategory(category: string, repo: RepoReality): string[] {
     ...Object.keys(repo.declaredDeps),
     ...Object.keys(repo.usedImports),
   ])
-  return [...seen].filter(p => PACKAGE_TO_CATEGORY[p] === category)
+  return [...seen].filter(p => packageInCategory(p, category))
 }
 
 /** True if any recorded import specifier equals or extends `specifier`. */
@@ -87,9 +88,9 @@ function detectMetricStuffing(
   // 3. Category padding: piling several same-category packages into one skill.
   const byCategory = new Map<string, string[]>()
   for (const pkg of skill.packages) {
-    const cat = PACKAGE_TO_CATEGORY[pkg]
-    if (!cat) continue
-    byCategory.set(cat, [...(byCategory.get(cat) ?? []), pkg])
+    for (const cat of categoriesForPackage(pkg)) {
+      byCategory.set(cat, [...(byCategory.get(cat) ?? []), pkg])
+    }
   }
   for (const [category, pkgs] of byCategory) {
     if (pkgs.length >= STUFFING_THRESHOLDS.categoryPadding) {
@@ -178,28 +179,40 @@ export function buildAlignmentReport(
       continue
     }
 
-    const category = PACKAGE_TO_CATEGORY[pkg]
-    if (category) {
-      const rivals = repoPackagesInCategory(category, repo).filter(
-        p => p !== pkg,
-      )
-      if (rivals.length > 0) {
-        scorableReferenceCount++
+    // A package can span categories (RTK is state + data-fetching). It stays
+    // one reference and one finding: the categories that actually conflict
+    // decide the verdict, so a rival in any of them is a conflict.
+    const categories = categoriesForPackage(pkg)
+    if (categories.length > 0) {
+      scorableReferenceCount++
+
+      const conflicting = categories
+        .map(category => ({
+          category,
+          rivals: repoPackagesInCategory(category, repo).filter(p => p !== pkg),
+        }))
+        .filter(entry => entry.rivals.length > 0)
+
+      if (conflicting.length > 0) {
+        const scope = conflicting.map(entry => entry.category).join('/')
+        const rivals = [
+          ...new Set(conflicting.flatMap(entry => entry.rivals)),
+        ].sort()
         findings.push({
           severity: 'critical',
           kind: 'category-conflict',
-          message: `Skill uses "${pkg}" (${category}); project uses "${rivals.join(
+          message: `Skill uses "${pkg}" (${scope}); project uses "${rivals.join(
             '", "',
           )}" for the same concern.`,
           skillReference: pkg,
           repoReality: rivals.join(', '),
         })
       } else {
-        scorableReferenceCount++
+        const scope = categories.join('/')
         findings.push({
           severity: 'warning',
           kind: 'missing-dependency',
-          message: `Skill uses "${pkg}" (${category}); project has no ${category} library.`,
+          message: `Skill uses "${pkg}" (${scope}); project has no ${scope} library.`,
           skillReference: pkg,
         })
       }

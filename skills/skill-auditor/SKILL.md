@@ -250,6 +250,14 @@ skill-auditor gaps $SKILLS_ROOT --project $PROJECT --checklist frontend --json
 skill-auditor audit $SKILLS_ROOT --project $PROJECT --json
 ```
 
+To gate the loop in CI rather than reading scores by hand, add a threshold —
+the command exits non-zero when any scored skill is below it (neutral skills
+are ignored):
+
+```bash
+skill-auditor audit $SKILLS_ROOT --project $PROJECT --min-score 70 --json
+```
+
 When `WEBSITE_SCOPE=yes`, also re-check website coverage and compliance:
 
 ```bash

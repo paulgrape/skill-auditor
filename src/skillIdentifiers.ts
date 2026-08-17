@@ -1,7 +1,13 @@
 import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
-import { PACKAGE_TO_CATEGORY, PROSE_MIN_WORDS } from './taxonomy.js'
+import {
+  frontmatterList,
+  frontmatterString,
+  parseFrontmatter,
+} from './frontmatter.js'
+import { topLevelPackage } from './packageNames.js'
+import { isKnownPackage, PROSE_MIN_WORDS } from './taxonomy.js'
 import type {
   PackageReference,
   ReferenceSubstantiation,
@@ -26,42 +32,6 @@ const SUBSTANTIATION_RANK: Record<ReferenceSubstantiation, number> = {
   mention: 0,
   fenced: 1,
   usage: 2,
-}
-
-/**
- * Extracts the `categories:` list from a SKILL.md YAML frontmatter block.
- * Supports both inline (`categories: [seo, accessibility]`) and block
- * (`categories:\n  - seo\n  - accessibility`) list forms.
- */
-function extractFrontmatterCategories(raw: string): string[] {
-  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/)
-  if (!fmMatch) return []
-  const fm = fmMatch[1]
-
-  const inline = fm.match(/^categories:\s*\[([^\]]*)\]\s*$/m)
-  if (inline) {
-    return inline[1]
-      .split(',')
-      .map(s => s.trim().replace(/^["']|["']$/g, ''))
-      .filter(Boolean)
-  }
-
-  const blockMatch = fm.match(/^categories:\s*\n((?:\s*-\s*.+\n?)+)/m)
-  if (blockMatch) {
-    return blockMatch[1]
-      .split('\n')
-      .map(line => line.replace(/^\s*-\s*/, '').trim().replace(/^["']|["']$/g, ''))
-      .filter(Boolean)
-  }
-
-  return []
-}
-
-function topLevelPackage(specifier: string): string {
-  if (specifier.startsWith('.') || specifier.startsWith('/')) return ''
-  return specifier.startsWith('@')
-    ? specifier.split('/').slice(0, 2).join('/')
-    : specifier.split('/')[0]
 }
 
 /**
@@ -144,9 +114,9 @@ function analyzeCode(code: string): CodeAnalysis {
 
   for (const m of code.matchAll(IMPORT_FROM_RE)) {
     const specifier = m[1]
-    result.importSpecifiers.add(specifier)
     const pkg = topLevelPackage(specifier)
     if (!pkg) continue
+    result.importSpecifiers.add(specifier)
 
     const bindings = importBindingNames(m[0])
     const codeAfterImport =
@@ -172,12 +142,13 @@ function analyzeCode(code: string): CodeAnalysis {
 
   for (const m of code.matchAll(REQUIRE_RE)) {
     const specifier = m[1]
-    result.importSpecifiers.add(specifier)
     const pkg = topLevelPackage(specifier)
+    if (!pkg) continue
+    result.importSpecifiers.add(specifier)
     // A bare require() call is at least fenced-level evidence; if its result
     // is assigned and the variable reused, the API_CALL/identifier heuristics
     // don't track it, so stay conservative.
-    if (pkg) upgrade(pkg, 'fenced')
+    upgrade(pkg, 'fenced')
   }
 
   for (const m of code.matchAll(PY_IMPORT_RE)) {
@@ -278,14 +249,12 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
   }
   // Normalize CRLF so fence/line-anchored regexes behave the same on Windows.
   const raw = fs.readFileSync(skillMdPath, 'utf-8').replace(/\r\n/g, '\n')
-
-  const nameMatch = raw.match(/^name:\s*(.+)$/m)
-  const skillName = nameMatch ? nameMatch[1].trim() : path.basename(skillDir)
+  const { data: frontmatter, body } = parseFrontmatter(raw)
 
   const result: SkillIdentifiers = {
-    skillName,
+    skillName: frontmatterString(frontmatter, 'name') ?? path.basename(skillDir),
     skillPath: skillDir,
-    categories: new Set(extractFrontmatterCategories(raw)),
+    categories: new Set(frontmatterList(frontmatter, 'categories')),
     packages: new Set(),
     importSpecifiers: new Set(),
     apiCalls: new Set(),
@@ -330,10 +299,6 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     result.unusedImportCount += analysis.unusedImportCount
   }
 
-  // Body = everything after frontmatter (or the whole file if none).
-  const fmMatch = raw.match(/^---\n[\s\S]*?\n---\n?/)
-  const body = fmMatch ? raw.slice(fmMatch[0].length) : raw
-
   for (const section of splitSections(body)) {
     const proseOk = section.proseWords >= PROSE_MIN_WORDS
 
@@ -361,8 +326,8 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
       // taxonomy-known names or scoped package names.
       const trimmed = span.trim()
       const isScoped = /^@[\w.-]+\/[\w.-]+$/.test(trimmed)
-      const isKnown = trimmed in PACKAGE_TO_CATEGORY
-      if (isScoped || isKnown) recordRef(trimmed, 'mention', proseOk)
+      if (isScoped || isKnownPackage(trimmed))
+        recordRef(trimmed, 'mention', proseOk)
     }
   }
 

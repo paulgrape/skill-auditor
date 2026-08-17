@@ -21,7 +21,7 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 
 ### Covered today
 
-**Frontend web apps (JS/TS)** — the core audit loop targets React/Next.js-style projects. Ground truth comes from `package.json` dependencies and import usage scanned across `*.{ts,tsx,js,jsx}` source files.
+**Frontend web apps (JS/TS)** — the core audit loop targets React/Next.js-style projects. Ground truth comes from `package.json` dependencies and import usage scanned across `*.{ts,tsx,js,jsx}` source files. In a monorepo, the dependencies of every workspace package are merged in too, resolved from the root `workspaces` field or `pnpm-workspace.yaml`. Node builtins (`node:fs`, `fs`) and path aliases (`@/…`, `~/…`, `#internal`) are not dependencies, so they are excluded from both sides of the comparison.
 
 | Area | What is checked |
 |------|-----------------|
@@ -51,6 +51,8 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 - **Backend** — Node/Python/Go APIs, auth, ORMs, queues, and service patterns
 - **System & DevOps** — infra, CI/CD, containers, observability, deployment targets
 - **Data science** — notebooks, ML libraries, pipelines, and experiment tooling
+
+A package can belong to several categories — `@reduxjs/toolkit` is both state and data-fetching — and counts toward each of them for focus, conflict detection, and gap coverage.
 
 Contributions to the taxonomy ([`src/taxonomy.ts`](src/taxonomy.ts)) are welcome via PR.
 
@@ -95,7 +97,12 @@ npm test
 ```bash
 skill-auditor audit ./my-skill --project .
 skill-auditor audit ./my-skill --project . --json
+skill-auditor audit .cursor/skills --project . --min-score 70
 ```
+
+Use `--min-score <n>` to fail the command when any scored skill falls below a
+0–100 threshold (neutral skills are ignored), and `--fail-on <severity>` to fail
+on findings. Both are CI gates and can be combined.
 
 **Scoring dimensions (technical skills):**
 
