@@ -1,30 +1,31 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { readFileSync } from 'node:fs'
-import { buildAlignmentReport } from './diff.js'
+import { buildDocs } from './docs.js'
 import {
   defaultSkillRoots,
   findSkillDirs,
   resolveSkillPath,
 } from './discoverSkills.js'
-import { detectGaps } from './gaps.js'
+import { envelope, setAwareReplacer } from './envelope.js'
+import { runMcpServer } from './mcp.js'
 import { buildRepoReality } from './repoReality.js'
-import { scoreSkill } from './score.js'
+import {
+  auditReport,
+  auditSkills,
+  gapsReport,
+  scanReport,
+  type AuditResult,
+} from './reports.js'
 import { extractSkillIdentifiers } from './skillIdentifiers.js'
 import { runSpecCompliance } from './specCompliance.js'
-import { buildSuggestions } from './suggestions.js'
 import type {
   AlignmentReport,
   DriftSeverity,
   SkillScore,
+  SkillSuggestion,
   SpecPriority,
 } from './types.js'
-
-/** JSON.stringify replacer that turns Sets into sorted arrays. */
-function setAwareReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Set) return [...value].sort()
-  return value
-}
+import { readPackageVersion } from './version.js'
 
 function printJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value, setAwareReplacer, 2) + '\n')
@@ -68,7 +69,7 @@ function formatScoreBlock(score: SkillScore): string[] {
 function formatReport(
   report: AlignmentReport,
   score: SkillScore,
-  suggestions: ReturnType<typeof buildSuggestions>,
+  suggestions: SkillSuggestion[],
 ): string[] {
   const lines: string[] = []
   lines.push(`Skill:     ${report.skillName}`)
@@ -101,41 +102,12 @@ function formatReport(
   return lines
 }
 
-interface AuditResult {
-  skillDir: string
-  report: AlignmentReport
-  score: SkillScore
-  suggestions: ReturnType<typeof buildSuggestions>
-}
-
-function runAudits(
-  repo: ReturnType<typeof buildRepoReality>,
-  skillDirs: string[],
-): AuditResult[] {
-  return skillDirs.map(skillDir => {
-    const skill = extractSkillIdentifiers(skillDir)
-    const report = buildAlignmentReport(skill, repo)
-    const score = scoreSkill(report, skill, repo)
-    const suggestions = buildSuggestions(report.findings)
-    return { skillDir, report, score, suggestions }
-  })
-}
-
 function printAuditResults(
   results: AuditResult[],
   opts: { json?: boolean },
 ): void {
   if (opts.json) {
-    if (results.length === 1) {
-      const r = results[0]
-      printJson({
-        report: r.report,
-        score: r.score,
-        suggestions: r.suggestions,
-      })
-    } else {
-      printJson({ count: results.length, results })
-    }
+    printJson(auditReport(results))
     return
   }
 
@@ -210,16 +182,6 @@ function resolveRoots(
   return [...userRoots, ...defaultSkillRoots(base)]
 }
 
-function readPackageVersion(): string {
-  try {
-    const pkgUrl = new URL('../package.json', import.meta.url)
-    const pkg = JSON.parse(readFileSync(pkgUrl, 'utf-8'))
-    return typeof pkg.version === 'string' ? pkg.version : '0.0.0'
-  } catch {
-    return '0.0.0'
-  }
-}
-
 const program = new Command()
 
 program
@@ -228,6 +190,10 @@ program
     'Audit imported Agent Skills against the reality of this project.',
   )
   .version(readPackageVersion(), '-v, --version', 'print version and exit')
+  .addHelpText(
+    'after',
+    '\nEvery --json payload carries a schemaVersion. Run `skill-auditor docs` for the full machine-readable contract.',
+  )
 
 program
   .command('scan')
@@ -235,7 +201,7 @@ program
   .option('--json', 'emit machine-readable JSON (scan output is always JSON)')
   .description('Print the RepoReality (declared deps + used imports) as JSON')
   .action((path: string) => {
-    printJson(buildRepoReality(path))
+    printJson(scanReport(path))
   })
 
 program
@@ -243,7 +209,7 @@ program
   .argument('<skillDir>', 'directory containing SKILL.md')
   .description('Print the SkillIdentifiers extracted from a skill as JSON')
   .action((skillDir: string) => {
-    printJson(extractSkillIdentifiers(skillDir))
+    printJson(envelope(extractSkillIdentifiers(skillDir)))
   })
 
 program
@@ -285,7 +251,7 @@ program
 
       const repo = buildRepoReality(opts.project)
       const skillDirs = resolveSkillPath(inputPath)
-      const results = runAudits(repo, skillDirs)
+      const results = auditSkills(repo, skillDirs)
       printAuditResults(results, opts)
 
       const underMin = belowMinScore(results, minScore)
@@ -310,7 +276,7 @@ program
   .action((roots: string[], opts: { defaults?: boolean; json?: boolean }) => {
     const skillDirs = findSkillDirs(resolveRoots(roots, opts))
     if (opts.json) {
-      printJson({ skillDirs, count: skillDirs.length })
+      printJson(envelope({ skillDirs, count: skillDirs.length }))
     } else {
       if (skillDirs.length === 0) {
         process.stdout.write('No skills found.\n')
@@ -364,7 +330,7 @@ program
 
       const repo = buildRepoReality(opts.project)
       const skillDirs = findSkillDirs(resolveRoots(roots, opts))
-      const results = runAudits(repo, skillDirs)
+      const results = auditSkills(repo, skillDirs)
       printAuditResults(results, opts)
 
       const underMin = belowMinScore(results, minScore)
@@ -400,13 +366,15 @@ program
         json?: boolean
       },
     ) => {
-      const repo = buildRepoReality(opts.project)
-      const resolvedRoots = resolveRoots(roots, opts)
-      const skillDirs = findSkillDirs(resolvedRoots)
-      const gapReport = detectGaps(repo, resolvedRoots, opts.checklist)
+      const gapReport = gapsReport(
+        resolveRoots(roots, opts),
+        opts.project,
+        opts.checklist,
+      )
+      const skillDirs = gapReport.skillDirs
 
       if (opts.json) {
-        printJson({ skillDirs, ...gapReport })
+        printJson(gapReport)
       } else {
         const lines: string[] = []
         lines.push(`Skills scanned (${skillDirs.length}):`)
@@ -491,7 +459,7 @@ program
       )
 
       if (opts.json) {
-        printJson(report)
+        printJson(envelope(report))
         process.exit(report.summary.fail > 0 ? 1 : 0)
       }
 
@@ -520,6 +488,25 @@ program
       process.exit(report.summary.fail > 0 ? 1 : 0)
     },
   )
+
+program
+  .command('docs')
+  .option('--json', 'emit machine-readable JSON (docs output is always JSON)')
+  .description(
+    'Print the machine-readable CLI contract: commands, flags, output shapes, exit codes',
+  )
+  .action(() => {
+    printJson(buildDocs(program, readPackageVersion()))
+  })
+
+program
+  .command('mcp')
+  .description(
+    'Run as an MCP server over stdio, exposing audit, gaps and scan as tools',
+  )
+  .action(() => {
+    runMcpServer()
+  })
 
 try {
   program.parse(process.argv)

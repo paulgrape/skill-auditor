@@ -17,34 +17,22 @@ describe('scan', () => {
 })
 
 describe('audit', () => {
-  const stale = parseJson([
-    'audit',
-    './fixtures/fake-skill',
-    '--project',
-    FAKE_PROJECT,
-    '--json',
-  ])
-  const aligned = parseJson([
-    'audit',
-    './fixtures/aligned-skill',
-    '--project',
-    FAKE_PROJECT,
-    '--json',
-  ])
-  const stuffed = parseJson([
-    'audit',
-    './fixtures/stuffed-skill',
-    '--project',
-    FAKE_PROJECT,
-    '--json',
-  ])
-  const neutral = parseJson([
-    'audit',
-    './fixtures/neutral-skill',
-    '--project',
-    FAKE_PROJECT,
-    '--json',
-  ])
+  /** Audits one skill and returns its single result entry. */
+  function auditOne(skillDir) {
+    const { results } = parseJson([
+      'audit',
+      skillDir,
+      '--project',
+      FAKE_PROJECT,
+      '--json',
+    ])
+    return results[0]
+  }
+
+  const stale = auditOne('./fixtures/fake-skill')
+  const aligned = auditOne('./fixtures/aligned-skill')
+  const stuffed = auditOne('./fixtures/stuffed-skill')
+  const neutral = auditOne('./fixtures/neutral-skill')
 
   test('flags a stale skill and suggests fixes', () => {
     assert.ok(stale.report.findings.some(f => f.severity === 'critical'))
@@ -74,13 +62,7 @@ describe('audit', () => {
   })
 
   test('penalizes a misaligned multi-category template', () => {
-    const template = parseJson([
-      'audit',
-      './templates/frontend-must-have',
-      '--project',
-      FAKE_PROJECT,
-      '--json',
-    ])
+    const template = auditOne('./templates/frontend-must-have')
     assert.equal(template.score.kind, 'technical')
     assert.ok(!template.report.findings.some(f => f.kind === 'metric-stuffing'))
     assert.ok(template.report.findings.some(f => f.kind === 'missing-dependency'))

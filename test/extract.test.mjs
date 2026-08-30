@@ -23,16 +23,16 @@ describe('non-package specifiers', () => {
   })
 
   test('a skill referencing only non-packages produces no findings', () => {
-    const audited = parseJson([
+    const { results } = parseJson([
       'audit',
       './fixtures/builtin-skill',
       '--project',
       FAKE_PROJECT,
       '--json',
     ])
-    assert.deepEqual(audited.report.findings, [])
-    assert.equal(audited.report.scorableReferenceCount, 0)
-    assert.equal(audited.score.breakdown.specificity, 0)
+    assert.deepEqual(results[0].report.findings, [])
+    assert.equal(results[0].report.scorableReferenceCount, 0)
+    assert.equal(results[0].score.breakdown.specificity, 0)
   })
 })
 

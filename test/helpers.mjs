@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -46,6 +46,48 @@ export function parseJson(args, options = {}) {
         `stderr: ${stderr || '(empty)'}\nstdout: ${stdout.slice(0, 500) || '(empty)'}`,
     )
   }
+}
+
+/**
+ * Drives the MCP server over a real stdio pipe: writes each message as a
+ * line, closes stdin and returns every JSON-RPC message it wrote back.
+ * Strings are written verbatim, so a test can send malformed input.
+ */
+export function runMcp(messages, { cwd = repoRoot } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, 'mcp'], {
+      cwd: path.resolve(repoRoot, cwd),
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf-8')
+    child.stderr.setEncoding('utf-8')
+    child.stdout.on('data', chunk => (stdout += chunk))
+    child.stderr.on('data', chunk => (stderr += chunk))
+    child.on('error', reject)
+    child.on('close', status => {
+      try {
+        const responses = stdout
+          .split('\n')
+          .filter(line => line.trim().length > 0)
+          .map(line => JSON.parse(line))
+        resolve({ responses, stderr, status })
+      } catch (err) {
+        reject(
+          new Error(
+            `MCP server did not emit newline-delimited JSON: ${err.message}\n` +
+              `stdout: ${stdout.slice(0, 500)}\nstderr: ${stderr || '(empty)'}`,
+          ),
+        )
+      }
+    })
+    for (const message of messages) {
+      const line =
+        typeof message === 'string' ? message : JSON.stringify(message)
+      child.stdin.write(line + '\n')
+    }
+    child.stdin.end()
+  })
 }
 
 export const FAKE_PROJECT = './fixtures/fake-project'
