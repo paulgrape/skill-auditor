@@ -32,6 +32,12 @@ skill-auditor list --json
 npx -y skill-auditor@latest list --json
 ```
 
+Every JSON payload starts with a `schemaVersion` field describing the contract it follows. If a command here is rejected or a payload doesn't look as described, ask the CLI itself instead of guessing — it prints every command, flag, output shape and exit code:
+
+```bash
+skill-auditor docs
+```
+
 ## Step 1 — Locate paths
 
 | What | Typical path |
@@ -78,8 +84,7 @@ skill-auditor spec-check $PROJECT --priority required --json
 From `scan`: note `declaredDeps` and `usedImports` — ground truth for packages and import specifiers.
 
 From `audit`:
-- Single skill → `{ report, score, suggestions }`
-- Skills root → `{ count, results: [{ report, score, suggestions }] }`
+- Always `{ schemaVersion, count, results: [{ skillDir, report, score, suggestions }] }` — one entry per skill, whether you passed a single skill directory or a skills root
 - Fix skills with low `score.overall` or critical findings using `suggestions`
 - Skip `kind: neutral` skills for alignment fixes (quality-only)
 

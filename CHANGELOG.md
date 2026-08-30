@@ -3,6 +3,49 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.0
+
+An agent-facing release: the JSON output is versioned and uniform, the audit is
+importable as a library, the CLI describes itself, and the whole analysis is
+available over the Model Context Protocol.
+
+Note: `audit`/`audit-all` no longer change shape with the number of skills —
+update any script that reads `report`/`score` off the top level.
+
+### Added
+
+- **MCP server** — `skill-auditor mcp` runs as a stdio Model Context Protocol
+  server exposing `audit`, `gaps` and `scan` as read-only tools, so any
+  MCP-capable agent can use the auditor without installing the bundled skill.
+  Tool results carry the same JSON payloads as the CLI, as text and as
+  `structuredContent`. The server is dependency-free and dual-era: it answers
+  both the stateless `2026-07-28` revision (per-request protocol metadata,
+  `server/discover`) and the older `initialize` handshake that most clients
+  still open with.
+- **Programmatic API** — the package now has an `exports` entry point.
+  `buildRepoReality`, `extractSkillIdentifiers`, `buildAlignmentReport`,
+  `scoreSkill`, `buildSuggestions`, `detectGaps` and `runSpecCompliance` are
+  importable individually, `auditSkills` runs the whole pipeline over a set of
+  skill directories, and the `*Report` helpers return the CLI's JSON payloads.
+  Every result type is exported too. Deep imports into `dist/` are no longer
+  part of the supported surface.
+- **`docs` command** — `skill-auditor docs` prints the CLI contract as JSON:
+  every command, argument, flag, output shape and exit code. It is generated
+  from the command definitions themselves and tested against the real payloads,
+  so an agent can discover the surface instead of trusting a possibly stale
+  SKILL.md.
+
+### Changed
+
+- **Every `--json` payload now carries a `schemaVersion`.** It is bumped when a
+  field is removed or changes meaning; added fields do not bump it. Read it
+  before parsing and treat unknown fields as additive.
+- **`audit` and `audit-all` always emit `{ schemaVersion, count, results }`.**
+  Auditing a single skill previously returned a bare
+  `{ report, score, suggestions }` object while a skills root returned a
+  `results` array, so every consumer had to branch on the result count. Results
+  now always include `skillDir`, single skill or not.
+
 ## 1.2.0
 
 Correctness pass on what counts as a package and which category it belongs to,

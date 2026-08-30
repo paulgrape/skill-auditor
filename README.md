@@ -168,6 +168,36 @@ skill-auditor scan .
 skill-auditor extract ./my-skill
 ```
 
+### `docs` — the machine-readable CLI contract
+
+```bash
+skill-auditor docs
+```
+
+Prints every command, argument, flag, output shape and exit code as JSON, generated from the CLI definition itself. An agent can discover the surface here instead of trusting a `SKILL.md` that may have drifted from the installed version.
+
+### `mcp` — serve the audit over the Model Context Protocol
+
+```bash
+skill-auditor mcp
+```
+
+Runs as a stdio MCP server exposing `audit`, `gaps` and `scan` as tools — see [Use from an MCP client](#use-from-an-mcp-client).
+
+## JSON contract
+
+Every `--json` payload starts with a `schemaVersion`. It is bumped when a field is removed or changes meaning; new fields may appear without a bump, so read it before parsing and treat unknown fields as additive.
+
+`audit` and `audit-all` always return an array:
+
+```json
+{
+  "schemaVersion": 1,
+  "count": 1,
+  "results": [{ "skillDir": "...", "report": {}, "score": {}, "suggestions": [] }]
+}
+```
+
 ## Agent loop
 
 Run audit with `--json`, read `suggestions`, fix each finding substantively (rewrite the affected section with a real, repo-grounded example — not a package-name swap), and re-run to confirm the findings are gone:
@@ -177,6 +207,45 @@ skill-auditor audit ./my-skill --project . --json
 ```
 
 Fixes that only chase the number don't work: name-drops, unused imports, and dependency-list dumps trigger `metric-stuffing` findings that cap the score, and invented APIs surface as `unverified-api` findings pointing at what the repo actually imports.
+
+## Use from an MCP client
+
+`skill-auditor mcp` serves the same analysis over the Model Context Protocol, so any MCP-capable agent can audit skills without installing the bundled skill. Register it as a stdio server:
+
+```json
+{
+  "mcpServers": {
+    "skill-auditor": {
+      "command": "npx",
+      "args": ["-y", "skill-auditor@latest", "mcp"]
+    }
+  }
+}
+```
+
+It exposes three read-only tools — `audit`, `gaps` and `scan` — returning the same JSON payloads as the CLI, as both text and `structuredContent`. Paths in tool arguments resolve relative to the directory the server was started in. The server speaks the current stateless revision (`2026-07-28`) and the older `initialize` handshake, so it works with clients on either side of that change.
+
+## Use as a library
+
+The analysis is also importable, for building your own gate or report:
+
+```ts
+import {
+  auditSkills,
+  buildRepoReality,
+  detectGaps,
+  findSkillDirs,
+} from 'skill-auditor'
+
+const repo = buildRepoReality('.')
+const results = auditSkills(repo, findSkillDirs(['.cursor/skills']))
+
+for (const { report, score } of results) {
+  console.log(report.skillName, score.overall, report.findings.length)
+}
+```
+
+`buildRepoReality`, `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps` and `runSpecCompliance` are exported individually when you want a single stage, along with the TypeScript types for every result.
 
 ## Starter templates
 
