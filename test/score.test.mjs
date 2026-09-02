@@ -3,6 +3,7 @@ import { describe, test } from 'node:test'
 import { buildAlignmentReport } from '../dist/diff.js'
 import { classifySkillKind, scoreSkill } from '../dist/score.js'
 import {
+  FRESHNESS_PENALTY,
   SPECIFICITY_SATURATION,
   STUFFING_SCORE_CAP,
   SUBSTANTIATION_WEIGHTS,
@@ -140,6 +141,64 @@ describe('alignment', () => {
     const repo = makeRepo({ declaredDeps: { next: '15' } })
     const result = score(makeSkill({ packages: ['next', 'zustand'] }), repo)
     assert.equal(result.breakdown.alignment, 0.5)
+  })
+})
+
+describe('freshness', () => {
+  const appRouterRepo = makeRepo({
+    declaredDeps: { next: '15' },
+    usedImports: { next: ['next/navigation'] },
+  })
+
+  test('is perfect without deprecated APIs', () => {
+    const result = score(makeSkill({ packages: ['next'] }), appRouterRepo)
+    assert.equal(result.breakdown.freshness, 1)
+  })
+
+  test('drops by the penalty per critical deprecated-api finding, floored at zero', () => {
+    const one = score(
+      makeSkill({ packages: ['next'], importSpecifiers: ['next/router'] }),
+      appRouterRepo,
+    )
+    assert.equal(one.breakdown.freshness, 1 - FRESHNESS_PENALTY)
+
+    const two = score(
+      makeSkill({
+        packages: ['next'],
+        importSpecifiers: ['next/router'],
+        apiCalls: ['getServerSideProps'],
+      }),
+      appRouterRepo,
+    )
+    assert.equal(two.breakdown.freshness, Math.max(0, 1 - 2 * FRESHNESS_PENALTY))
+
+    const three = score(
+      makeSkill({
+        packages: ['next'],
+        importSpecifiers: ['next/router'],
+        apiCalls: ['getServerSideProps', 'getStaticProps'],
+      }),
+      appRouterRepo,
+    )
+    assert.equal(three.breakdown.freshness, 0)
+  })
+
+  test('is not charged when the repo never adopted the successor API', () => {
+    const pagesRouterRepo = makeRepo({
+      declaredDeps: { next: '15' },
+      usedImports: { next: ['next/router'] },
+    })
+    const result = score(
+      makeSkill({ packages: ['next'], importSpecifiers: ['next/router'] }),
+      pagesRouterRepo,
+    )
+    assert.equal(result.breakdown.freshness, 1)
+  })
+
+  test('is still reported for neutral skills', () => {
+    const result = score(makeSkill(), appRouterRepo)
+    assert.equal(result.kind, 'neutral')
+    assert.equal(result.breakdown.freshness, 1)
   })
 })
 

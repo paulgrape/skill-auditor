@@ -130,23 +130,35 @@ export function detectGaps(
   }
 
   if (checklistKey) {
-    const required = MUST_HAVE_CHECKLISTS[checklistKey]
-    if (required) {
-      for (const category of required) {
-        if (!covered.has(category)) {
-          gaps.push(
-            makeGap(
-              'checklist-gap',
-              category,
-              `Must-have checklist "${checklistKey}" requires ${category} coverage; no skill provides it.`,
-              `Create or install a ${category} skill (see skills/ templates for examples).`,
-              repo,
-            ),
-          )
-        }
+    for (const category of requireChecklist(checklistKey)) {
+      if (!covered.has(category)) {
+        gaps.push(
+          makeGap(
+            'checklist-gap',
+            category,
+            `Must-have checklist "${checklistKey}" requires ${category} coverage; no skill provides it.`,
+            `Create or install a ${category} skill (the templates/ directory of the skill-auditor package has reference examples).`,
+            repo,
+          ),
+        )
       }
     }
   }
 
   return { projectCategories, coveredCategories, gaps }
+}
+
+/**
+ * Resolves a checklist key or throws. A misspelt key used to be ignored
+ * silently, which turned a CI gate into a no-op; failing loudly is the same
+ * policy `--min-score` and `--fail-on` already follow.
+ */
+export function requireChecklist(key: string): string[] {
+  const required = MUST_HAVE_CHECKLISTS[key]
+  if (!required) {
+    throw new Error(
+      `Unknown checklist "${key}". Expected one of: ${Object.keys(MUST_HAVE_CHECKLISTS).join(', ')}`,
+    )
+  }
+  return required
 }

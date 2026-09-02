@@ -2,7 +2,12 @@ import { createInterface } from 'node:readline'
 import { defaultSkillRoots, resolveSkillPath } from './discoverSkills.js'
 import { toPlainJson } from './envelope.js'
 import { buildRepoReality } from './repoReality.js'
-import { auditReport, auditSkills, gapsReport, scanReport } from './reports.js'
+import {
+  auditReport,
+  auditSkillsSafely,
+  gapsReport,
+  scanReport,
+} from './reports.js'
 import { MUST_HAVE_CHECKLISTS } from './taxonomy.js'
 import { readPackageVersion } from './version.js'
 
@@ -133,20 +138,29 @@ export const MCP_TOOLS: McpTool[] = [
       type: 'object',
       properties: {
         schemaVersion: SCHEMA_VERSION_PROPERTY,
-        count: { type: 'integer' },
+        count: {
+          type: 'integer',
+          description: 'Number of skills that were scored.',
+        },
         results: {
           type: 'array',
           description:
             'One entry per audited skill: { skillDir, report, score, suggestions }.',
         },
+        errors: {
+          type: 'array',
+          description:
+            'Skill directories that could not be read or parsed: { skillDir, error }. Empty on a clean run.',
+        },
       },
-      required: ['schemaVersion', 'count', 'results'],
+      required: ['schemaVersion', 'count', 'results', 'errors'],
     },
     run(args) {
       const project = optionalString(args, 'project') ?? '.'
       const repo = buildRepoReality(project)
       const skillDirs = resolveSkillPath(requireString(args, 'path'))
-      return auditReport(auditSkills(repo, skillDirs))
+      const { results, errors } = auditSkillsSafely(repo, skillDirs)
+      return auditReport(results, errors)
     },
   },
   {

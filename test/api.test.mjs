@@ -5,11 +5,13 @@ import { describe, test } from 'node:test'
 import {
   auditReport,
   auditSkills,
+  auditSkillsSafely,
   buildAlignmentReport,
   buildRepoReality,
   detectGaps,
   extractSkillIdentifiers,
   findSkillDirs,
+  requireChecklist,
   SCHEMA_VERSION,
   scoreSkill,
 } from '../dist/index.js'
@@ -55,6 +57,26 @@ describe('programmatic api', () => {
     assert.equal(payload.schemaVersion, SCHEMA_VERSION)
     assert.equal(payload.count, 2)
     assert.equal(payload.results.length, 2)
+    assert.deepEqual(payload.errors, [])
+  })
+
+  test('isolates an unreadable skill instead of aborting the batch', () => {
+    const repo = buildRepoReality(project)
+    const aligned = path.join(repoRoot, 'fixtures/aligned-skill')
+    const broken = path.join(repoRoot, 'fixtures/broken-skill')
+
+    assert.throws(() => auditSkills(repo, [aligned, broken]))
+
+    const { results, errors } = auditSkillsSafely(repo, [aligned, broken])
+    assert.equal(results.length, 1)
+    assert.equal(results[0].skillDir, aligned)
+    assert.equal(errors.length, 1)
+    assert.equal(errors[0].skillDir, broken)
+    assert.ok(errors[0].error.length > 0)
+
+    const payload = auditReport(results, errors)
+    assert.equal(payload.count, 1)
+    assert.equal(payload.errors.length, 1)
   })
 
   test('detects uncovered categories', () => {
@@ -63,5 +85,14 @@ describe('programmatic api', () => {
 
     assert.ok(gaps.coveredCategories.includes('state'))
     assert.ok(gaps.gaps.some(gap => gap.category === 'testing'))
+  })
+
+  test('rejects an unknown checklist key', () => {
+    assert.deepEqual(requireChecklist('frontend').length > 0, true)
+    assert.throws(() => requireChecklist('nope'), /Unknown checklist "nope"/)
+    assert.throws(
+      () => detectGaps(buildRepoReality(project), [], 'nope'),
+      /Unknown checklist/,
+    )
   })
 })

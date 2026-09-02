@@ -7,17 +7,20 @@ import {
   resolveSkillPath,
 } from './discoverSkills.js'
 import { envelope, setAwareReplacer } from './envelope.js'
+import { requireChecklist } from './gaps.js'
 import { runMcpServer } from './mcp.js'
 import { buildRepoReality } from './repoReality.js'
 import {
   auditReport,
-  auditSkills,
+  auditSkillsSafely,
   gapsReport,
   scanReport,
+  type AuditError,
   type AuditResult,
 } from './reports.js'
 import { extractSkillIdentifiers } from './skillIdentifiers.js'
 import { runSpecCompliance } from './specCompliance.js'
+import { MUST_HAVE_CHECKLISTS } from './taxonomy.js'
 import type {
   AlignmentReport,
   DriftSeverity,
@@ -104,22 +107,26 @@ function formatReport(
 
 function printAuditResults(
   results: AuditResult[],
+  errors: AuditError[],
   opts: { json?: boolean },
 ): void {
   if (opts.json) {
-    printJson(auditReport(results))
-    return
-  }
-
-  if (results.length === 0) {
+    printJson(auditReport(results, errors))
+  } else if (results.length === 0 && errors.length === 0) {
     process.stdout.write('No skills found.\n')
-    return
+  } else {
+    for (const r of results) {
+      process.stdout.write(
+        formatReport(r.report, r.score, r.suggestions).join('\n') + '\n\n',
+      )
+    }
   }
 
-  for (const r of results) {
-    process.stdout.write(
-      formatReport(r.report, r.score, r.suggestions).join('\n') + '\n\n',
-    )
+  // Unreadable skills are reported on stderr in both modes: the JSON payload
+  // already carries them, and a human reading text output must not mistake a
+  // skipped skill for a passing one.
+  for (const e of errors) {
+    process.stderr.write(`Could not audit ${e.skillDir}: ${e.error}\n`)
   }
 }
 
@@ -128,6 +135,53 @@ function auditFailed(results: AuditResult[], failOn: DriftSeverity): boolean {
   return results.some(r =>
     r.report.findings.some(f => SEVERITY_ORDER[f.severity] >= threshold),
   )
+}
+
+/**
+ * Shared tail of `audit` and `audit-all`: print, apply the CI gates, exit.
+ * An unreadable skill fails the run — an audit that could not audit
+ * something must not report green.
+ */
+function finishAudit(
+  results: AuditResult[],
+  errors: AuditError[],
+  failOn: DriftSeverity,
+  minScore: number | undefined,
+  json: boolean,
+): never {
+  printAuditResults(results, errors, { json })
+
+  const underMin = belowMinScore(results, minScore)
+  if (minScore !== undefined) {
+    reportMinScoreFailures(underMin, minScore, json)
+  }
+  const failed =
+    auditFailed(results, failOn) || underMin.length > 0 || errors.length > 0
+  process.exit(failed ? 1 : 0)
+}
+
+/** Parses `--fail-on`, exiting with code 2 on an unknown severity. */
+function parseFailOn(raw: string): DriftSeverity {
+  if (!(raw in SEVERITY_ORDER)) {
+    process.stderr.write(
+      `Invalid --fail-on "${raw}". Use info, warning, or critical.\n`,
+    )
+    process.exit(2)
+  }
+  return raw as DriftSeverity
+}
+
+/** Validates `--checklist`, exiting with code 2 on an unknown key. */
+function parseChecklist(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  try {
+    requireChecklist(raw)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`Invalid --checklist: ${message}\n`)
+    process.exit(2)
+  }
+  return raw
 }
 
 /**
@@ -240,27 +294,13 @@ program
         json?: boolean
       },
     ) => {
-      const failOn = opts.failOn as DriftSeverity
-      if (!(failOn in SEVERITY_ORDER)) {
-        process.stderr.write(
-          `Invalid --fail-on "${opts.failOn}". Use info, warning, or critical.\n`,
-        )
-        process.exit(2)
-      }
+      const failOn = parseFailOn(opts.failOn)
       const minScore = parseMinScore(opts.minScore)
 
       const repo = buildRepoReality(opts.project)
       const skillDirs = resolveSkillPath(inputPath)
-      const results = auditSkills(repo, skillDirs)
-      printAuditResults(results, opts)
-
-      const underMin = belowMinScore(results, minScore)
-      if (minScore !== undefined) {
-        reportMinScoreFailures(underMin, minScore, Boolean(opts.json))
-      }
-      process.exit(
-        auditFailed(results, failOn) || underMin.length > 0 ? 1 : 0,
-      )
+      const { results, errors } = auditSkillsSafely(repo, skillDirs)
+      finishAudit(results, errors, failOn, minScore, Boolean(opts.json))
     },
   )
 
@@ -319,39 +359,28 @@ program
         json?: boolean
       },
     ) => {
-      const failOn = opts.failOn as DriftSeverity
-      if (!(failOn in SEVERITY_ORDER)) {
-        process.stderr.write(
-          `Invalid --fail-on "${opts.failOn}". Use info, warning, or critical.\n`,
-        )
-        process.exit(2)
-      }
+      const failOn = parseFailOn(opts.failOn)
       const minScore = parseMinScore(opts.minScore)
 
       const repo = buildRepoReality(opts.project)
       const skillDirs = findSkillDirs(resolveRoots(roots, opts))
-      const results = auditSkills(repo, skillDirs)
-      printAuditResults(results, opts)
-
-      const underMin = belowMinScore(results, minScore)
-      if (minScore !== undefined) {
-        reportMinScoreFailures(underMin, minScore, Boolean(opts.json))
-      }
-      process.exit(
-        auditFailed(results, failOn) || underMin.length > 0 ? 1 : 0,
-      )
+      const { results, errors } = auditSkillsSafely(repo, skillDirs)
+      finishAudit(results, errors, failOn, minScore, Boolean(opts.json))
     },
   )
 
 program
   .command('gaps')
-  .argument('[roots...]', 'skill roots to scan recursively', [])
+  .argument('[roots...]', 'skill roots to scan recursively (default: .)', ['.'])
   .option('-p, --project <path>', 'project root to analyze', '.')
   .option(
     '-d, --defaults',
     'also scan well-known project-local skill roots (.cursor/.claude/.agents/.codex)',
   )
-  .option('-c, --checklist <key>', 'must-have checklist key (e.g. frontend)')
+  .option(
+    '-c, --checklist <key>',
+    `must-have checklist key (${Object.keys(MUST_HAVE_CHECKLISTS).join('|')})`,
+  )
   .option('--fail-on-gap', 'exit non-zero when any gap is found (CI-friendly)')
   .option('--json', 'emit machine-readable JSON')
   .description('Detect uncovered stack categories and checklist gaps')
@@ -366,10 +395,11 @@ program
         json?: boolean
       },
     ) => {
+      const checklist = parseChecklist(opts.checklist)
       const gapReport = gapsReport(
         resolveRoots(roots, opts),
         opts.project,
-        opts.checklist,
+        checklist,
       )
       const skillDirs = gapReport.skillDirs
 

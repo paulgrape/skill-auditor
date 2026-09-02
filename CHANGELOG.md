@@ -3,6 +3,69 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.1
+
+Correctness fixes for what the extractor reads out of a skill, plus the CLI
+gates that were silently doing nothing. Scores can move for skills whose code
+blocks are CSS, HTML or shell (they now classify as neutral), and for skills
+that rename their imports with `as`.
+
+Note: `audit`/`audit-all` JSON gains an always-present `errors` array; the
+result entries themselves are unchanged. `schemaVersion` stays at 1.
+
+### Fixed
+
+- **Non-JS code blocks no longer produce phantom technical references.** The
+  JS import and API-call regexes ran over every fenced block regardless of its
+  language tag, so `@media (` in a CSS example or `$(` in a shell snippet
+  became "API calls". A skill made of nothing but CSS, HTML and shell was then
+  scored as a technical skill with a 50% alignment prior, landing at an F with
+  no findings and nothing for an agent to act on. Extraction is now keyed on
+  the fence language: JS/TS-family tags (and untagged fences) get the JS
+  rules, `python` fences get the Python import rule, everything else is prose.
+  All bundled `templates/website-*` skills now classify as `neutral`.
+- **Aliased imports verify correctly.** A skill importing
+  `{ useRouter as useNav }` recorded `useNav` as the demonstrated identifier,
+  while the repo scan records exported names, so the reference could never be
+  verified and drew an `unverified-api` finding. The exported name is now
+  recorded for verification; usage inside the snippet is still judged by the
+  local alias.
+- **Python standard-library imports are not packages.** `import os` in a
+  `python` fence no longer counts as a package reference, matching how
+  `node:fs` is already excluded on the JS side.
+- **Identifier matching is safe for any name.** The usage check built a
+  regular expression from the imported identifier while escaping only `$`, so
+  other metacharacters could throw or match the wrong thing. Identifiers are
+  now fully escaped and matched on identifier boundaries, which also fixes
+  `$store`-style names that `\b` could not delimit.
+- **`gaps` with no roots scans the working directory**, like `list` and
+  `audit-all` already did. Previously it scanned nothing and reported every
+  category as a gap.
+- **Unknown `--checklist` keys exit `2`** with the valid keys listed, instead
+  of being silently ignored — the same policy `--min-score` and `--fail-on`
+  follow, so a typo cannot turn a CI gate into a no-op. The library's
+  `detectGaps` throws for the same input; `requireChecklist` is exported.
+- **One unreadable skill no longer aborts the whole audit.** `audit` and
+  `audit-all` now audit every skill they can and report the rest in a new
+  `errors: [{ skillDir, error }]` array (always present, empty on a clean
+  run), also written to stderr as `Could not audit <dir>: <reason>`. An
+  unreadable skill fails the run with exit `1`. Library consumers get the same
+  behaviour from the new `auditSkillsSafely`; `auditSkills` still throws.
+- The `gaps` fallback recommendation pointed at `skills/` for template
+  examples; they have lived under `templates/` since 1.0.0.
+- Bundled `references/*.md` files are read with the same section-aware pass
+  as `SKILL.md` instead of having code regexes run over raw markdown; other
+  bundled files are analysed by extension.
+
+### Internal
+
+- The ignore list for file walks (`node_modules`, `dist`, `build`, `.next`,
+  `.turbo`, `coverage`, `.git`) lives in one module; skill discovery
+  previously skipped fewer directories than the repo scan.
+- Tests added for `--fail-on` and `--fail-on-gap` exit codes, the
+  `freshness` dimension, non-JS fences, aliased imports, checklist
+  validation, and the unreadable-skill path.
+
 ## 1.3.0
 
 An agent-facing release: the JSON output is versioned and uniform, the audit is
