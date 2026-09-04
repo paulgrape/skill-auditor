@@ -51,28 +51,28 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
   },
   audit: {
     alwaysJson: false,
-    fields: ['count', 'results'],
+    fields: ['count', 'results', 'errors'],
     description:
-      '`results` is always an array of `{ skillDir, report, score, suggestions }`, one entry per audited skill, even when a single skill directory was passed.',
+      '`results` is always an array of `{ skillDir, report, score, suggestions }`, one entry per audited skill, even when a single skill directory was passed. `errors` lists skill directories that could not be read as `{ skillDir, error }` and is empty on a clean run.',
     exitCodes: [
       OK,
       {
         code: 1,
-        when: 'a finding at or above --fail-on exists, or a skill is below --min-score',
+        when: 'a finding at or above --fail-on exists, a skill is below --min-score, or a skill could not be audited',
       },
       USAGE_ERROR,
     ],
   },
   'audit-all': {
     alwaysJson: false,
-    fields: ['count', 'results'],
+    fields: ['count', 'results', 'errors'],
     description:
       'Same payload as `audit`, over every skill discovered under the given roots.',
     exitCodes: [
       OK,
       {
         code: 1,
-        when: 'a finding at or above --fail-on exists, or a skill is below --min-score',
+        when: 'a finding at or above --fail-on exists, a skill is below --min-score, or a skill could not be audited',
       },
       USAGE_ERROR,
     ],
@@ -91,6 +91,7 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
     exitCodes: [
       OK,
       { code: 1, when: '--fail-on-gap was passed and a gap was found' },
+      USAGE_ERROR,
     ],
   },
   'spec-check': {

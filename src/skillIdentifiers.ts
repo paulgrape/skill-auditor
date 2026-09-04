@@ -7,6 +7,7 @@ import {
   parseFrontmatter,
 } from './frontmatter.js'
 import { topLevelPackage } from './packageNames.js'
+import { isPythonStdlib } from './pythonStdlib.js'
 import { isKnownPackage, PROSE_MIN_WORDS } from './taxonomy.js'
 import type {
   PackageReference,
@@ -14,10 +15,41 @@ import type {
   SkillIdentifiers,
 } from './types.js'
 
-/** Matches fenced code blocks: ```lang\n...\n``` */
-const FENCED_BLOCK_RE = /```[\w-]*\n([\s\S]*?)```/g
+/** Matches fenced code blocks, capturing the info-string language and body. */
+const FENCED_BLOCK_RE = /```([\w-]*)[^\n]*\n([\s\S]*?)```/g
 /** Matches inline code spans: `like this` */
 const INLINE_CODE_RE = /`([^`\n]+)`/g
+
+/**
+ * Which extraction rules apply to a fenced block, decided by its language
+ * tag. Only JS/TS-family code can carry npm imports and API calls; running
+ * the JS regexes over CSS, HTML or shell turns `@media (` and `$(` into
+ * "API calls" and pushes a prose skill out of the neutral bucket. Untagged
+ * fences get both the JS and the Python rules, since many skills omit the tag.
+ */
+type FenceLanguage = 'js' | 'python' | 'untagged' | 'other'
+
+const JS_FENCE_TAGS = new Set([
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'mjs',
+  'cjs',
+  'mts',
+  'cts',
+  'javascript',
+  'typescript',
+])
+const PYTHON_FENCE_TAGS = new Set(['py', 'python', 'python3'])
+
+function classifyFence(tag: string): FenceLanguage {
+  const normalized = tag.toLowerCase()
+  if (normalized === '') return 'untagged'
+  if (JS_FENCE_TAGS.has(normalized)) return 'js'
+  if (PYTHON_FENCE_TAGS.has(normalized)) return 'python'
+  return 'other'
+}
 
 /** import ... from "pkg"  |  import "pkg" */
 const IMPORT_FROM_RE = /import\s+(?:[\w*{}\s,]+\s+from\s+)?["']([^"']+)["']/g
@@ -35,28 +67,45 @@ const SUBSTANTIATION_RANK: Record<ReferenceSubstantiation, number> = {
 }
 
 /**
- * Parses the binding names introduced by a JS import statement's clause,
- * e.g. `import Default, { a, b as c } from 'x'` -> ["Default", "a" -> "c"].
- * Returns [] for side-effect imports (`import 'x'`).
+ * One binding introduced by an import clause. `source` is the name exported
+ * by the package (what the repo scan records for named imports) and `local`
+ * is the identifier the snippet uses; they differ only for `a as b`.
  */
-function importBindingNames(importStatement: string): string[] {
+interface ImportBinding {
+  source: string
+  local: string
+}
+
+/**
+ * Parses the bindings introduced by a JS import statement's clause, e.g.
+ * `import Default, { a, b as c } from 'x'` ->
+ * [{Default}, {a}, {source: "b", local: "c"}].
+ * Returns [] for side-effect imports (`import 'x'`). Default and namespace
+ * imports have no source name of their own, so their local name stands in.
+ */
+function importBindings(importStatement: string): ImportBinding[] {
   const clauseMatch = importStatement.match(
     /import\s+([\w*{}\s,$]+?)\s+from\s+["']/,
   )
   if (!clauseMatch) return []
   const clause = clauseMatch[1]
-  const names: string[] = []
+  const bindings: ImportBinding[] = []
 
   const namespace = clause.match(/\*\s+as\s+([\w$]+)/)
-  if (namespace) names.push(namespace[1])
+  if (namespace) bindings.push({ source: namespace[1], local: namespace[1] })
 
   const braces = clause.match(/\{([^}]*)\}/)
   if (braces) {
     for (const part of braces[1].split(',')) {
       const trimmed = part.trim()
       if (!trimmed) continue
-      const asMatch = trimmed.match(/\s+as\s+([\w$]+)$/)
-      names.push(asMatch ? asMatch[1] : trimmed.split(/\s+/)[0])
+      const asMatch = trimmed.match(/^([\w$]+)\s+as\s+([\w$]+)$/)
+      if (asMatch) {
+        bindings.push({ source: asMatch[1], local: asMatch[2] })
+      } else {
+        const name = trimmed.split(/\s+/)[0]
+        bindings.push({ source: name, local: name })
+      }
     }
   }
 
@@ -66,16 +115,22 @@ function importBindingNames(importStatement: string): string[] {
     .split(',')
     .map(s => s.trim())
     .find(s => /^[\w$]+$/.test(s))
-  if (defaultName) names.push(defaultName)
+  if (defaultName) bindings.push({ source: defaultName, local: defaultName })
 
-  return names
+  return bindings
 }
 
-/** True if `identifier` appears as a standalone word anywhere in `code`. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * True if `identifier` appears as a standalone identifier anywhere in `code`.
+ * Lookarounds instead of `\b` so `$store`-style names, which start with a
+ * non-word character, still match on identifier boundaries.
+ */
 function identifierUsedIn(code: string, identifier: string): boolean {
-  const re = new RegExp(
-    `\\b${identifier.replace(/\$/g, '\\$')}\\b`,
-  )
+  const re = new RegExp(`(?<![\\w$])${escapeRegExp(identifier)}(?![\\w$])`)
   return re.test(code)
 }
 
@@ -90,20 +145,59 @@ interface CodeAnalysis {
   unusedImportCount: number
 }
 
-/**
- * Analyzes one code snippet (fenced block or bundled script file).
- * Distinguishes imports whose bindings are actually used ('usage') from
- * imports that just sit there ('fenced') — the latter is the cheapest way to
- * stuff references into a skill, so it is worth almost nothing.
- */
-function analyzeCode(code: string): CodeAnalysis {
-  const result: CodeAnalysis = {
+function emptyAnalysis(): CodeAnalysis {
+  return {
     packages: new Map(),
     importedIdentifiers: new Map(),
     importSpecifiers: new Set(),
     apiCalls: new Set(),
     unusedImportCount: 0,
   }
+}
+
+/**
+ * Analyzes one code snippet (fenced block, inline span or bundled script
+ * file) with the rules for its language. Distinguishes imports whose bindings
+ * are actually used ('usage') from imports that just sit there ('fenced') —
+ * the latter is the cheapest way to stuff references into a skill, so it is
+ * worth almost nothing.
+ */
+function analyzeCode(code: string, language: FenceLanguage): CodeAnalysis {
+  if (language === 'other') return emptyAnalysis()
+  if (language === 'python') return analyzePython(code)
+  const result = analyzeJavaScript(code)
+  if (language === 'untagged') {
+    for (const [pkg, tier] of analyzePython(code).packages) {
+      if (!result.packages.has(pkg)) result.packages.set(pkg, tier)
+    }
+  }
+  return result
+}
+
+/**
+ * Python snippets can only tell us which modules they import. There is no
+ * npm-side ground truth to verify them against, so they count as fenced
+ * references at most; stdlib modules are not packages and are dropped.
+ */
+function analyzePython(code: string): CodeAnalysis {
+  const result = emptyAnalysis()
+  for (const m of code.matchAll(PY_IMPORT_RE)) {
+    // Skip JS imports that also match this pattern ("import Link from '...'"):
+    // JS import lines always quote the module specifier, Python's never do.
+    const lineStart = code.lastIndexOf('\n', m.index ?? 0) + 1
+    const lineEnd = code.indexOf('\n', (m.index ?? 0) + 1)
+    const line = code.slice(lineStart, lineEnd === -1 ? undefined : lineEnd)
+    if (/["']/.test(line)) continue
+
+    const pkg = m[1].split('.')[0]
+    if (!pkg || isPythonStdlib(pkg)) continue
+    result.packages.set(pkg, 'fenced')
+  }
+  return result
+}
+
+function analyzeJavaScript(code: string): CodeAnalysis {
+  const result = emptyAnalysis()
 
   const upgrade = (pkg: string, tier: ReferenceSubstantiation) => {
     const current = result.packages.get(pkg)
@@ -118,14 +212,17 @@ function analyzeCode(code: string): CodeAnalysis {
     if (!pkg) continue
     result.importSpecifiers.add(specifier)
 
-    const bindings = importBindingNames(m[0])
+    const bindings = importBindings(m[0])
     const codeAfterImport =
       code.slice(0, m.index) + code.slice((m.index ?? 0) + m[0].length)
-    const used = bindings.filter(b => identifierUsedIn(codeAfterImport, b))
+    // Usage is judged by the local name the snippet actually writes...
+    const used = bindings.filter(b => identifierUsedIn(codeAfterImport, b.local))
 
+    // ...while verification against the repo compares source names, which is
+    // what the repo scan records for named imports.
     if (bindings.length > 0) {
       const ids = result.importedIdentifiers.get(pkg) ?? new Set<string>()
-      for (const b of bindings) ids.add(b)
+      for (const b of bindings) ids.add(b.source)
       result.importedIdentifiers.set(pkg, ids)
     }
 
@@ -151,18 +248,6 @@ function analyzeCode(code: string): CodeAnalysis {
     upgrade(pkg, 'fenced')
   }
 
-  for (const m of code.matchAll(PY_IMPORT_RE)) {
-    // Skip JS imports that also match this pattern ("import Link from '...'"):
-    // JS import lines always quote the module specifier, Python's never do.
-    const lineStart = code.lastIndexOf('\n', m.index ?? 0) + 1
-    const lineEnd = code.indexOf('\n', (m.index ?? 0) + 1)
-    const line = code.slice(lineStart, lineEnd === -1 ? undefined : lineEnd)
-    if (/["']/.test(line)) continue
-
-    const pkg = m[1].split('.')[0]
-    if (pkg) upgrade(pkg, 'fenced')
-  }
-
   for (const m of code.matchAll(API_CALL_RE)) {
     // Filter out generic JS keywords/control-flow that aren't real API surface.
     const KEYWORDS = new Set([
@@ -180,10 +265,15 @@ function analyzeCode(code: string): CodeAnalysis {
   return result
 }
 
+interface FencedBlock {
+  language: FenceLanguage
+  code: string
+}
+
 interface MarkdownSection {
   /** Words of prose in the section (code stripped) */
   proseWords: number
-  fencedBlocks: string[]
+  fencedBlocks: FencedBlock[]
   inlineSpans: string[]
 }
 
@@ -206,11 +296,14 @@ function splitSections(body: string): MarkdownSection[] {
 
   return chunks.map(chunk => {
     const text = chunk.join('\n')
-    const fencedBlocks: string[] = []
-    let withoutFences = text.replace(FENCED_BLOCK_RE, (_m, code: string) => {
-      fencedBlocks.push(code)
-      return ' '
-    })
+    const fencedBlocks: FencedBlock[] = []
+    const withoutFences = text.replace(
+      FENCED_BLOCK_RE,
+      (_m, tag: string, code: string) => {
+        fencedBlocks.push({ language: classifyFence(tag), code })
+        return ' '
+      },
+    )
     // Markdown table rows are catalogs/enumerations (e.g. "common packages"
     // reference tables), not teaching content — inline code inside them must
     // not count as package references, or list-style skills get flagged as
@@ -299,47 +392,59 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     result.unusedImportCount += analysis.unusedImportCount
   }
 
-  for (const section of splitSections(body)) {
-    const proseOk = section.proseWords >= PROSE_MIN_WORDS
+  const mergeMarkdown = (markdown: string) => {
+    for (const section of splitSections(markdown)) {
+      const proseOk = section.proseWords >= PROSE_MIN_WORDS
 
-    for (const block of section.fencedBlocks) {
-      mergeAnalysis(analyzeCode(block), proseOk)
-    }
-
-    // Inline code spans: imports/requires still count as code, but a package
-    // name that only ever appears inline is a bare mention.
-    for (const span of section.inlineSpans) {
-      const analysis = analyzeCode(span)
-      // Downgrade anything found in an inline span to 'mention' — a one-line
-      // span is never a demonstrated usage.
-      const downgraded: CodeAnalysis = {
-        ...analysis,
-        packages: new Map(
-          [...analysis.packages.keys()].map(pkg => [pkg, 'mention' as const]),
-        ),
-        unusedImportCount: 0,
+      for (const block of section.fencedBlocks) {
+        mergeAnalysis(analyzeCode(block.code, block.language), proseOk)
       }
-      mergeAnalysis(downgraded, proseOk)
 
-      // Bare package-name mentions (`tailwindcss`, `@tanstack/react-query`):
-      // count them as mention-tier references when they are unambiguous —
-      // taxonomy-known names or scoped package names.
-      const trimmed = span.trim()
-      const isScoped = /^@[\w.-]+\/[\w.-]+$/.test(trimmed)
-      if (isScoped || isKnownPackage(trimmed))
-        recordRef(trimmed, 'mention', proseOk)
+      // Inline code spans: imports/requires still count as code, but a
+      // package name that only ever appears inline is a bare mention.
+      for (const span of section.inlineSpans) {
+        const analysis = analyzeCode(span, 'untagged')
+        // Downgrade anything found in an inline span to 'mention' — a
+        // one-line span is never a demonstrated usage.
+        const downgraded: CodeAnalysis = {
+          ...analysis,
+          packages: new Map(
+            [...analysis.packages.keys()].map(pkg => [pkg, 'mention' as const]),
+          ),
+          unusedImportCount: 0,
+        }
+        mergeAnalysis(downgraded, proseOk)
+
+        // Bare package-name mentions (`tailwindcss`, `@tanstack/react-query`):
+        // count them as mention-tier references when they are unambiguous —
+        // taxonomy-known names or scoped package names.
+        const trimmed = span.trim()
+        const isScoped = /^@[\w.-]+\/[\w.-]+$/.test(trimmed)
+        if (isScoped || isKnownPackage(trimmed))
+          recordRef(trimmed, 'mention', proseOk)
+      }
     }
   }
 
-  // Bundled scripts/references are already code — parse them directly, no
-  // fence-stripping needed. Real files don't need surrounding prose.
+  mergeMarkdown(body)
+
+  // Bundled scripts/references: the file extension plays the role of the
+  // fence tag. Markdown references go through the same section-aware pass as
+  // SKILL.md; code files are parsed directly and, being real files, do not
+  // need surrounding prose to count.
   const bundledFiles = fg.sync(['scripts/**/*.*', 'references/**/*.*'], {
     cwd: skillDir,
     absolute: true,
   })
   for (const file of bundledFiles) {
+    const extension = path.extname(file).slice(1).toLowerCase()
+    const language = classifyFence(extension)
+    const isMarkdown = extension === 'md' || extension === 'mdx'
+    if (language === 'other' && !isMarkdown) continue
     try {
-      mergeAnalysis(analyzeCode(fs.readFileSync(file, 'utf-8')), true)
+      const text = fs.readFileSync(file, 'utf-8').replace(/\r\n/g, '\n')
+      if (isMarkdown) mergeMarkdown(parseFrontmatter(text).body)
+      else mergeAnalysis(analyzeCode(text, language), true)
     } catch {
       // binary/unreadable asset, skip
     }

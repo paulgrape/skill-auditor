@@ -1,6 +1,7 @@
 import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
+import { DEFAULT_IGNORE } from './ignore.js'
 import { WEBSITE_SPEC_ITEMS } from './websiteSpec.js'
 import type {
   ComplianceFinding,
@@ -8,16 +9,6 @@ import type {
   ComplianceStatus,
   SpecPriority,
 } from './types.js'
-
-const DEFAULT_IGNORE = [
-  '**/node_modules/**',
-  '**/dist/**',
-  '**/build/**',
-  '**/.next/**',
-  '**/.turbo/**',
-  '**/coverage/**',
-  '**/.git/**',
-]
 
 interface FileText {
   rel: string

@@ -3,17 +3,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { Project, SyntaxKind } from 'ts-morph'
 import { frontmatterList, parseSimpleYaml } from './frontmatter.js'
+import { DEFAULT_IGNORE } from './ignore.js'
 import { topLevelPackage } from './packageNames.js'
 import type { ImportEvidence, RepoReality } from './types.js'
-
-const DEFAULT_IGNORE = [
-  '**/node_modules/**',
-  '**/dist/**',
-  '**/build/**',
-  '**/.next/**',
-  '**/.turbo/**',
-  '**/coverage/**',
-]
 
 /** Max evidence entries kept per package to avoid noisy output. */
 const MAX_EVIDENCE_PER_PACKAGE = 5

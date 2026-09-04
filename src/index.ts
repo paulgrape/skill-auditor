@@ -14,13 +14,16 @@ export {
   resolveSkillPath,
 } from './discoverSkills.js'
 export { envelope, SCHEMA_VERSION, toPlainJson } from './envelope.js'
-export { detectGaps } from './gaps.js'
+export { detectGaps, requireChecklist } from './gaps.js'
 export { buildRepoReality } from './repoReality.js'
 export {
   auditReport,
+  auditSkill,
   auditSkills,
+  auditSkillsSafely,
   gapsReport,
   scanReport,
+  type AuditError,
   type AuditResult,
 } from './reports.js'
 export { scoreSkill } from './score.js'

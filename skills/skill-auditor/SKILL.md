@@ -84,9 +84,10 @@ skill-auditor spec-check $PROJECT --priority required --json
 From `scan`: note `declaredDeps` and `usedImports` — ground truth for packages and import specifiers.
 
 From `audit`:
-- Always `{ schemaVersion, count, results: [{ skillDir, report, score, suggestions }] }` — one entry per skill, whether you passed a single skill directory or a skills root
+- Always `{ schemaVersion, count, results: [{ skillDir, report, score, suggestions }], errors: [{ skillDir, error }] }` — one result per skill, whether you passed a single skill directory or a skills root
+- `errors` is empty on a clean run; an entry means that skill's `SKILL.md` could not be read — tell the user, do not try to "fix" it by rewriting the file blind
 - Fix skills with low `score.overall` or critical findings using `suggestions`
-- Skip `kind: neutral` skills for alignment fixes (quality-only)
+- Skip `kind: neutral` skills for alignment fixes (quality-only). Skills whose code is only CSS, HTML or shell are neutral by design
 
 From `gaps`:
 - `gaps[]` lists uncovered categories (`kind`: `uncovered-category` or `checklist-gap`)

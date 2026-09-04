@@ -42,7 +42,7 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 - `--checklist website` — [Website Specification](https://specification.website) domains (foundations, SEO, accessibility, security, performance, privacy, resilience, i18n, agent-readiness)
 - `spec-check` — static compliance scan for HTML head, public assets, header config, routes (opt-in)
 
-**Skill kinds:** technical skills (package/API references) get full alignment scoring; neutral skills (tone/style, no tech refs) get intrinsic quality scoring only.
+**Skill kinds:** technical skills (package/API references) get full alignment scoring; neutral skills (tone/style, no tech refs) get intrinsic quality scoring only. Only JS/TS-family code blocks (and untagged ones) can produce package or API references — CSS, HTML, shell and other fences are treated as prose, so a skill made of them is neutral. `python` fences contribute their non-stdlib imports as package references.
 
 ### Planned
 
@@ -125,7 +125,7 @@ skill-auditor gaps ~/.agents/skills --project . --json
 skill-auditor gaps .cursor/skills --project . --checklist frontend --fail-on-gap
 ```
 
-Pass a skills root — scans recursively for every `SKILL.md` in nested dirs. Use `--fail-on-gap` to exit non-zero when any gap is found (CI-friendly).
+Pass a skills root — scans recursively for every `SKILL.md` in nested dirs (defaults to the current directory). Use `--fail-on-gap` to exit non-zero when any gap is found (CI-friendly). An unknown `--checklist` key exits `2`.
 
 Two must-have checklists ship today:
 
@@ -194,9 +194,12 @@ Every `--json` payload starts with a `schemaVersion`. It is bumped when a field 
 {
   "schemaVersion": 1,
   "count": 1,
-  "results": [{ "skillDir": "...", "report": {}, "score": {}, "suggestions": [] }]
+  "results": [{ "skillDir": "...", "report": {}, "score": {}, "suggestions": [] }],
+  "errors": []
 }
 ```
+
+`count` is the number of skills scored. `errors` lists skill directories that could not be read as `{ "skillDir", "error" }`; it is empty on a clean run, and any entry makes the command exit `1`.
 
 ## Agent loop
 
@@ -245,7 +248,7 @@ for (const { report, score } of results) {
 }
 ```
 
-`buildRepoReality`, `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps` and `runSpecCompliance` are exported individually when you want a single stage, along with the TypeScript types for every result.
+`buildRepoReality`, `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps` and `runSpecCompliance` are exported individually when you want a single stage, along with the TypeScript types for every result. `auditSkills` throws on the first unreadable skill; `auditSkillsSafely` returns `{ results, errors }` instead, which is what the CLI and MCP server use.
 
 ## Starter templates
 

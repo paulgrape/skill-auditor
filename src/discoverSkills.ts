@@ -1,8 +1,7 @@
 import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
-
-const DEFAULT_IGNORE = ['**/node_modules/**', '**/dist/**', '**/.git/**']
+import { DEFAULT_IGNORE } from './ignore.js'
 
 const DEFAULT_SKILL_DIRS = [
   '.cursor/skills',
