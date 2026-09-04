@@ -1,8 +1,8 @@
 ---
 name: website-i18n
 description: Internationalisation essentials for a website — URL structure for locales, hreflang, localised metadata, the lang attribute on inline content, language switchers, RTL support, and locale-aware formatting. Use when adding multilingual or multi-regional content to a site.
-categories:
-  - i18n
+metadata:
+  categories: i18n
 ---
 
 # Website internationalisation

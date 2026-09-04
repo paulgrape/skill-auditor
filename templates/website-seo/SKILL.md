@@ -1,8 +1,8 @@
 ---
 name: website-seo
 description: Search-visibility essentials for a website — robots.txt, XML sitemaps, canonical URLs, redirects, meta robots, heading hierarchy, internal linking, and JSON-LD structured data. Use when auditing or improving how crawlers and AI agents discover and index a site.
-categories:
-  - seo
+metadata:
+  categories: seo
 ---
 
 # Website SEO

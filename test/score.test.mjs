@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { buildAlignmentReport } from '../dist/diff.js'
-import { classifySkillKind, scoreSkill } from '../dist/score.js'
+import { classifySkillKind, explainLowScore, scoreSkill } from '../dist/score.js'
 import {
   FRESHNESS_PENALTY,
   SPECIFICITY_SATURATION,
@@ -30,6 +30,18 @@ describe('classifySkillKind', () => {
         makeSkill({ packages: ['next', 'zustand', 'zod', 'vitest'] }),
       ),
       'technical',
+    )
+  })
+
+  test('is procedural when the only fenced code is shell', () => {
+    assert.equal(
+      classifySkillKind(
+        makeSkill({
+          packages: ['vitest'],
+          codeEvidence: { codeFences: 0, shellFences: 2 },
+        }),
+      ),
+      'procedural',
     )
   })
 })
@@ -226,5 +238,27 @@ describe('metric-stuffing cap', () => {
       'every reference matches the repo',
     )
     assert.ok(result.overall <= STUFFING_SCORE_CAP)
+  })
+})
+
+describe('explainLowScore', () => {
+  test('names the gap when a scored skill has no drift findings', () => {
+    const skill = makeSkill({ apiCalls: ['inventedHelper'] })
+    const repo = makeRepo()
+    const report = buildAlignmentReport(skill, repo)
+    const scored = scoreSkill(report, skill, repo)
+    assert.ok(scored.overall !== null && scored.overall < 70)
+    assert.deepEqual(report.findings, [])
+    const finding = explainLowScore(report, scored, skill)
+    assert.equal(finding?.kind, 'unscorable')
+  })
+
+  test('is silent when findings already explain the score', () => {
+    const skill = makeSkill({ packages: ['redux'] })
+    const repo = makeRepo({ declaredDeps: { zustand: '5' } })
+    const report = buildAlignmentReport(skill, repo)
+    const scored = scoreSkill(report, skill, repo)
+    assert.ok(report.findings.length > 0)
+    assert.equal(explainLowScore(report, scored, skill), null)
   })
 })

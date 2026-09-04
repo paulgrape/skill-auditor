@@ -1,5 +1,5 @@
 ---
-name: cursor-foo
+name: foo
 description: Default roots fixture for .cursor/skills.
 ---
 

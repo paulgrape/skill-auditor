@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
+  declaredCategories,
   frontmatterList,
+  frontmatterMap,
   frontmatterString,
   parseFrontmatter,
   parseSimpleYaml,
@@ -88,9 +90,17 @@ describe('parseSimpleYaml', () => {
     assert.equal(folded.description, 'line one line two')
   })
 
-  test('skips nested mappings without consuming the next key', () => {
+  test('reads one-level mappings such as metadata', () => {
     const data = parseSimpleYaml('metadata:\n  nested: value\nname: demo\n')
     assert.equal(data.name, 'demo')
+    assert.deepEqual(data.metadata, { nested: 'value' })
+  })
+
+  test('keeps a mapping even when a stray list item sits under it', () => {
+    const data = parseSimpleYaml(
+      'metadata:\n  categories: agent-readiness\n  - leftover\n',
+    )
+    assert.deepEqual(data.metadata, { categories: 'agent-readiness' })
   })
 
   test('returns nothing for an empty document', () => {
@@ -112,5 +122,17 @@ describe('accessors', () => {
     assert.equal(frontmatterString({ name: 'demo' }, 'name'), 'demo')
     assert.equal(frontmatterString({ name: [] }, 'name'), undefined)
     assert.equal(frontmatterString({ name: '' }, 'name'), undefined)
+  })
+
+  test('declaredCategories prefers metadata.categories over a top-level list', () => {
+    assert.deepEqual(
+      declaredCategories({
+        metadata: { categories: 'seo, accessibility' },
+        categories: ['ignored'],
+      }),
+      ['seo', 'accessibility'],
+    )
+    assert.deepEqual(declaredCategories({ categories: ['seo'] }), ['seo'])
+    assert.ok(frontmatterMap({ metadata: { a: 'b' } }, 'metadata'))
   })
 })

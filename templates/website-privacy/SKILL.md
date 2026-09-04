@@ -1,8 +1,8 @@
 ---
 name: website-privacy
 description: Privacy and consent essentials for a website — privacy policy, cookie consent, Global Privacy Control, third-party script auditing, privacy-respecting analytics, and data minimisation. Use when handling personal data, consent flows, analytics, or third-party scripts.
-categories:
-  - privacy
+metadata:
+  categories: privacy
 ---
 
 # Website privacy

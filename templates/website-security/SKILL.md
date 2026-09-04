@@ -1,8 +1,8 @@
 ---
 name: website-security
 description: Transport and HTTP-header security for a website — HTTPS/TLS, HSTS, Content Security Policy, X-Content-Type-Options, clickjacking protection, cookie attributes, and security.txt. Use when configuring server headers, TLS, cookies, or a disclosure policy.
-categories:
-  - security
+metadata:
+  categories: security
 ---
 
 # Website security

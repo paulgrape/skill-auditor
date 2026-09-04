@@ -1,19 +1,34 @@
 /**
  * Minimal YAML reader for the subset SKILL.md frontmatter and
  * pnpm-workspace.yaml actually use: top-level scalars, inline lists, block
- * lists and block scalars. Nested mappings are recognized but not modelled.
+ * lists, block scalars and one level of nested mapping (the spec's
+ * `metadata:` block, a map of string keys to string values). Deeper nesting
+ * is skipped without consuming the next top-level key.
  *
  * A dependency-free parser is deliberate — the alternative (gray-matter and
- * its yaml engine) more than doubles install size for four keys.
+ * its yaml engine) more than doubles install size for a handful of keys.
  */
 
-export type YamlValue = string | string[]
+export type YamlValue = string | string[] | Record<string, string>
 
 export interface Frontmatter {
   data: Record<string, YamlValue>
   /** Everything after the closing fence, or the whole input when there is none */
   body: string
   hasFrontmatter: boolean
+  /** 1-based line number in the original document where `body` starts */
+  bodyStartLine: number
+}
+
+/** Reads a key as a nested string mapping, or undefined for anything else. */
+export function frontmatterMap(
+  data: Record<string, YamlValue>,
+  key: string,
+): Record<string, string> | undefined {
+  const value = data[key]
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : undefined
 }
 
 const KEY_RE = /^([A-Za-z0-9_.$-]+):(?:\s+(.*))?$/
@@ -98,12 +113,19 @@ function readBlockScalar(
   return { value: collected.join(fold ? ' ' : '\n'), next: i }
 }
 
-/** Collects the block list items belonging to a key, if any follow it. */
-function readBlockList(
+/**
+ * Collects whatever block follows a key with no inline value: a list of
+ * `- item` lines, or an indented mapping of `key: value` lines. Deeper
+ * nesting inside the mapping is skipped so it cannot be mistaken for the next
+ * top-level key.
+ */
+function readBlock(
   lines: string[],
   start: number,
-): { items: string[]; next: number } {
+): { value: string[] | Record<string, string>; next: number } {
   const items: string[] = []
+  const mapping: Record<string, string> = {}
+  let mappingIndent = -1
   let i = start
   for (; i < lines.length; i++) {
     const line = lines[i]
@@ -114,12 +136,24 @@ function readBlockList(
       items.push(unquote(stripComment(item[1])))
       continue
     }
-    // Indented non-list content is a nested mapping we do not model; skip past
-    // it so it cannot be mistaken for the next top-level key.
-    if (indentOf(line) > 0) continue
-    break
+
+    const indent = indentOf(line)
+    if (indent === 0) break
+
+    if (mappingIndent === -1) mappingIndent = indent
+    if (indent !== mappingIndent) continue // deeper nesting: not modelled
+    const entry = line.trim().match(KEY_RE)
+    if (entry) {
+      const rest = stripComment(entry[2] ?? '')
+      if (rest !== '' && !BLOCK_SCALAR_RE.test(rest)) {
+        mapping[entry[1]] = rest.startsWith('[')
+          ? parseInlineList(rest).join(', ')
+          : unquote(rest)
+      }
+    }
   }
-  return { items, next: i }
+  const value = Object.keys(mapping).length > 0 ? mapping : items
+  return { value, next: i }
 }
 
 export function parseSimpleYaml(text: string): Record<string, YamlValue> {
@@ -144,8 +178,8 @@ export function parseSimpleYaml(text: string): Record<string, YamlValue> {
     const rest = stripComment(match[2] ?? '')
 
     if (rest === '') {
-      const { items, next } = readBlockList(lines, i + 1)
-      data[key] = items
+      const { value, next } = readBlock(lines, i + 1)
+      data[key] = value
       i = next
       continue
     }
@@ -168,13 +202,14 @@ export function parseFrontmatter(raw: string): Frontmatter {
   const normalized = raw.replace(/\r\n/g, '\n')
   const match = normalized.match(/^---[ \t]*\n([\s\S]*?)\n---[ \t]*(?:\n|$)/)
   if (!match) {
-    return { data: {}, body: normalized, hasFrontmatter: false }
+    return { data: {}, body: normalized, hasFrontmatter: false, bodyStartLine: 1 }
   }
 
   return {
     data: parseSimpleYaml(match[1]),
     body: normalized.slice(match[0].length),
     hasFrontmatter: true,
+    bodyStartLine: match[0].split('\n').length,
   }
 }
 
@@ -185,7 +220,24 @@ export function frontmatterList(
 ): string[] {
   const value = data[key]
   if (Array.isArray(value)) return value.filter(Boolean)
-  return value ? [value] : []
+  return typeof value === 'string' && value ? [value] : []
+}
+
+/**
+ * The taxonomy categories a skill declares. The spec-conformant home is
+ * `metadata.categories` (a comma- or space-separated string, since metadata
+ * values must be strings); a top-level `categories:` list is still read as a
+ * legacy fallback and flagged by `validate`.
+ */
+export function declaredCategories(data: Record<string, YamlValue>): string[] {
+  const fromMetadata = frontmatterMap(data, 'metadata')?.categories
+  if (fromMetadata) {
+    return fromMetadata
+      .split(/[\s,]+/)
+      .map(s => s.trim())
+      .filter(Boolean)
+  }
+  return frontmatterList(data, 'categories')
 }
 
 /** Reads a key as a non-empty string, or undefined when absent or a list. */

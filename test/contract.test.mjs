@@ -21,6 +21,15 @@ const JSON_INVOCATIONS = {
   gaps: ['gaps', './fixtures/nested-skills', '-p', FAKE_PROJECT, '--json'],
   'spec-check': ['spec-check', './fixtures/website-project', '--json'],
   docs: ['docs'],
+  validate: ['validate', './fixtures/aligned-skill', '--json'],
+  scaffold: [
+    'scaffold',
+    'routing',
+    '-p',
+    FAKE_PROJECT,
+    '--dry-run',
+    '--json',
+  ],
 }
 
 const docs = parseJson(['docs'])
@@ -78,9 +87,9 @@ describe('docs', () => {
 
   test('documented fields match the real payloads', () => {
     for (const command of docs.commands) {
-      // The MCP server writes protocol messages, not a report; it is covered
-      // end-to-end in mcp.test.mjs instead.
-      if (command.name === 'mcp') continue
+      // The MCP server writes protocol messages, not a report; compare needs
+      // two saved payloads and is covered in compare.test.mjs.
+      if (command.name === 'mcp' || command.name === 'compare') continue
 
       const args = JSON_INVOCATIONS[command.name]
       assert.ok(args, `${command.name} has no JSON invocation under test`)

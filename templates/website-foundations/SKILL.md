@@ -1,8 +1,8 @@
 ---
 name: website-foundations
 description: HTML document foundations for any web page — doctype, lang, charset, viewport, title, meta description, canonical, Open Graph, and color-scheme. Use when building or auditing the document head, page shell, or root layout of a website.
-categories:
-  - foundations
+metadata:
+  categories: foundations
 ---
 
 # Website foundations

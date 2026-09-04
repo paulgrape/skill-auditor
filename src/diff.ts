@@ -4,13 +4,23 @@ import {
   packageInCategory,
   STUFFING_THRESHOLDS,
   UNKNOWN_ALIGNMENT_PRIOR,
+  type DeprecatedApiRule,
 } from './taxonomy.js'
 import type {
   AlignmentReport,
   DriftFinding,
   RepoReality,
   SkillIdentifiers,
+  SourceLocation,
 } from './types.js'
+
+/** Attaches a location to a finding when the skill recorded one. */
+function locate<T extends DriftFinding>(
+  finding: T,
+  location: SourceLocation | undefined,
+): T {
+  return location ? { ...finding, location } : finding
+}
 
 /** True if repo declares OR actually imports this top-level package. */
 export function repoHasPackage(pkg: string, repo: RepoReality): boolean {
@@ -37,6 +47,38 @@ function repoUsesSpecifier(specifier: string, repo: RepoReality): boolean {
     }
   }
   return false
+}
+
+/**
+ * A deprecation rule applies only when the repo demonstrably adopted the
+ * successor: by importing one of the named specifiers, or one of the named
+ * identifiers from a package.
+ */
+function ruleApplies(rule: DeprecatedApiRule, repo: RepoReality): boolean {
+  const specifiers =
+    rule.onlyIfRepoUses === undefined
+      ? []
+      : Array.isArray(rule.onlyIfRepoUses)
+        ? rule.onlyIfRepoUses
+        : [rule.onlyIfRepoUses]
+  if (specifiers.some(s => repoUsesSpecifier(s, repo))) return true
+
+  return (rule.onlyIfRepoImports ?? []).some(({ package: pkg, identifier }) =>
+    repo.usedIdentifiers[pkg]?.has(identifier),
+  )
+}
+
+/** What the rule's message should cite as the repo's side of the story. */
+function ruleEvidence(rule: DeprecatedApiRule): string {
+  const specifiers = Array.isArray(rule.onlyIfRepoUses)
+    ? rule.onlyIfRepoUses
+    : rule.onlyIfRepoUses
+      ? [rule.onlyIfRepoUses]
+      : []
+  const identifiers = (rule.onlyIfRepoImports ?? []).map(
+    ({ package: pkg, identifier }) => `${identifier} from ${pkg}`,
+  )
+  return [...specifiers, ...identifiers].join(' | ')
 }
 
 /** exact match, or `spec` is a prefix path of `candidate` (next/router -> next/router/x) */
@@ -144,20 +186,25 @@ function verifyIdentifiers(
 
     if (matched.length > 0) verified.add(pkg)
     if (unmatched.length > 0) {
-      findings.push({
-        severity: 'info',
-        kind: 'unverified-api',
-        message: `Skill demonstrates ${unmatched
-          .sort()
-          .map(id => `"${id}"`)
-          .join(', ')} from "${pkg}", but the project never imports ${
-          unmatched.length === 1 ? 'it' : 'them'
-        }. Prefer the APIs the repo actually uses (project imports: ${[...repoIds]
-          .sort()
-          .join(', ')}).`,
-        skillReference: `${pkg}: ${unmatched.sort().join(', ')}`,
-        repoReality: [...repoIds].sort().join(', '),
-      })
+      findings.push(
+        locate(
+          {
+            severity: 'info',
+            kind: 'unverified-api',
+            message: `Skill demonstrates ${unmatched
+              .sort()
+              .map(id => `"${id}"`)
+              .join(', ')} from "${pkg}", but the project never imports ${
+              unmatched.length === 1 ? 'it' : 'them'
+            }. Prefer the APIs the repo actually uses (project imports: ${[...repoIds]
+              .sort()
+              .join(', ')}).`,
+            skillReference: `${pkg}: ${unmatched.sort().join(', ')}`,
+            repoReality: [...repoIds].sort().join(', '),
+          },
+          skill.locations.packages[pkg],
+        ),
+      )
     }
   }
 
@@ -173,6 +220,7 @@ export function buildAlignmentReport(
   let scorableReferenceCount = 0
 
   for (const pkg of [...skill.packages].sort()) {
+    const location = skill.locations.packages[pkg]
     if (repoHasPackage(pkg, repo)) {
       matchedReferenceCount++
       scorableReferenceCount++
@@ -198,64 +246,90 @@ export function buildAlignmentReport(
         const rivals = [
           ...new Set(conflicting.flatMap(entry => entry.rivals)),
         ].sort()
-        findings.push({
-          severity: 'critical',
-          kind: 'category-conflict',
-          message: `Skill uses "${pkg}" (${scope}); project uses "${rivals.join(
-            '", "',
-          )}" for the same concern.`,
-          skillReference: pkg,
-          repoReality: rivals.join(', '),
-        })
+        findings.push(
+          locate(
+            {
+              severity: 'critical',
+              kind: 'category-conflict',
+              message: `Skill uses "${pkg}" (${scope}); project uses "${rivals.join(
+                '", "',
+              )}" for the same concern.`,
+              skillReference: pkg,
+              repoReality: rivals.join(', '),
+            },
+            location,
+          ),
+        )
       } else {
         const scope = categories.join('/')
-        findings.push({
-          severity: 'warning',
-          kind: 'missing-dependency',
-          message: `Skill uses "${pkg}" (${scope}); project has no ${scope} library.`,
-          skillReference: pkg,
-        })
+        findings.push(
+          locate(
+            {
+              severity: 'warning',
+              kind: 'missing-dependency',
+              message: `Skill uses "${pkg}" (${scope}); project has no ${scope} library.`,
+              skillReference: pkg,
+            },
+            location,
+          ),
+        )
       }
       continue
     }
 
     // Unknown package, not in repo: low-confidence, excluded from denominator.
-    findings.push({
-      severity: 'info',
-      kind: 'unused-reference',
-      message: `Skill references "${pkg}", which the project does not use (no known category).`,
-      skillReference: pkg,
-    })
+    findings.push(
+      locate(
+        {
+          severity: 'info',
+          kind: 'unused-reference',
+          message: `Skill references "${pkg}", which the project does not use (no known category).`,
+          skillReference: pkg,
+        },
+        location,
+      ),
+    )
   }
 
   // Deprecated-API pass: gated on repo actually using the successor API.
   for (const rule of DEPRECATED_API_RULES) {
-    if (!repoUsesSpecifier(rule.onlyIfRepoUses, repo)) continue
+    if (!ruleApplies(rule, repo)) continue
+    const evidence = ruleEvidence(rule)
 
     for (const api of rule.deprecatedApiCalls ?? []) {
       if (skill.apiCalls.has(api)) {
-        findings.push({
-          severity: 'critical',
-          kind: 'deprecated-api',
-          message: `${rule.message} (${rule.framework}: "${api}")`,
-          skillReference: api,
-          repoReality: rule.onlyIfRepoUses,
-        })
+        findings.push(
+          locate(
+            {
+              severity: 'critical',
+              kind: 'deprecated-api',
+              message: `${rule.message} (${rule.framework}: "${api}")`,
+              skillReference: api,
+              repoReality: evidence,
+            },
+            skill.locations.apiCalls[api],
+          ),
+        )
       }
     }
 
     for (const spec of rule.deprecatedImportSpecifiers ?? []) {
-      const hit = [...skill.importSpecifiers].some(s =>
+      const hit = [...skill.importSpecifiers].find(s =>
         specifierMatches(s, spec),
       )
       if (hit) {
-        findings.push({
-          severity: 'critical',
-          kind: 'deprecated-api',
-          message: `${rule.message} (${rule.framework}: "${spec}")`,
-          skillReference: spec,
-          repoReality: rule.onlyIfRepoUses,
-        })
+        findings.push(
+          locate(
+            {
+              severity: 'critical',
+              kind: 'deprecated-api',
+              message: `${rule.message} (${rule.framework}: "${spec}")`,
+              skillReference: spec,
+              repoReality: evidence,
+            },
+            skill.locations.importSpecifiers[hit],
+          ),
+        )
       }
     }
   }

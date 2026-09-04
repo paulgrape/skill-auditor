@@ -101,6 +101,7 @@ export function makeSkill({
   substantiatedByProse = true,
   importedIdentifiers = {},
   unusedImportCount = 0,
+  codeEvidence = { codeFences: 0, shellFences: 0 },
 } = {}) {
   return {
     skillName: 'test-skill',
@@ -120,6 +121,8 @@ export function makeSkill({
       Object.entries(importedIdentifiers).map(([k, v]) => [k, new Set(v)]),
     ),
     unusedImportCount,
+    locations: { packages: {}, importSpecifiers: {}, apiCalls: {} },
+    codeEvidence,
   }
 }
 

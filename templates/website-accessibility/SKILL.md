@@ -1,8 +1,8 @@
 ---
 name: website-accessibility
 description: WCAG-aligned accessibility rules for a website — image alt text, form labels, keyboard navigation, visible focus, skip links, semantic landmarks, accessible errors, reduced motion, and captions. Use when auditing or building accessible UI, forms, navigation, or media.
-categories:
-  - accessibility
+metadata:
+  categories: accessibility
 ---
 
 # Website accessibility

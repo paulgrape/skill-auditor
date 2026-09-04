@@ -46,7 +46,11 @@ describe('mcp server', () => {
       const discover = byId(responses, 1).result
       assert.ok(discover.supportedVersions.includes(MODERN_VERSION))
       assert.ok(discover.supportedVersions.includes(LEGACY_VERSION))
-      assert.deepEqual(discover.capabilities, { tools: {} })
+      assert.deepEqual(discover.capabilities, {
+        tools: {},
+        resources: {},
+        prompts: {},
+      })
       assert.equal(discover.resultType, 'complete')
     })
 
@@ -63,16 +67,26 @@ describe('mcp server', () => {
       )
     })
 
-    test('lists audit, gaps and scan with input schemas', () => {
+    test('lists the analysis tools with input schemas', () => {
       const { tools } = byId(responses, 3).result
       assert.deepEqual(
         tools.map(tool => tool.name).sort(),
-        ['audit', 'gaps', 'scan'],
+        [
+          'audit',
+          'docs',
+          'extract',
+          'gaps',
+          'scaffold',
+          'scan',
+          'spec-check',
+          'validate',
+        ],
       )
       for (const tool of tools) {
         assert.equal(tool.inputSchema.type, 'object')
         assert.ok(tool.description.length > 0)
-        assert.equal(tool.annotations.readOnlyHint, true)
+        const readOnly = tool.name !== 'scaffold'
+        assert.equal(tool.annotations.readOnlyHint, readOnly, tool.name)
       }
       const audit = tools.find(tool => tool.name === 'audit')
       assert.deepEqual(audit.inputSchema.required, ['path'])
@@ -170,6 +184,57 @@ describe('mcp server', () => {
 
     test('rejects an unknown tool as invalid params', () => {
       assert.equal(byId(responses, 5).error.code, -32602)
+    })
+  })
+
+  describe('resources and prompts', () => {
+    let responses
+
+    before(async () => {
+      ;({ responses } = await runMcp([
+        request(1, 'resources/list'),
+        request(2, 'resources/read', {
+          uri: 'skill-auditor://templates/website-accessibility',
+        }),
+        request(3, 'prompts/list'),
+        request(4, 'prompts/get', {
+          name: 'audit-and-fix',
+          arguments: { skillsRoot: '.cursor/skills', project: '.' },
+        }),
+        request(5, 'tools/call', {
+          name: 'validate',
+          arguments: { path: './fixtures/aligned-skill' },
+        }),
+      ]))
+    })
+
+    test('lists bundled templates as markdown resources', () => {
+      const { resources } = byId(responses, 1).result
+      assert.ok(
+        resources.some(r => r.uri === 'skill-auditor://templates/website-accessibility'),
+      )
+      assert.ok(
+        resources.some(r => r.uri === 'skill-auditor://bundled/skill-auditor'),
+      )
+    })
+
+    test('reads a template SKILL.md', () => {
+      const { contents } = byId(responses, 2).result
+      assert.match(contents[0].text, /name: website-accessibility/)
+    })
+
+    test('exposes the audit-and-fix prompt', () => {
+      const { prompts } = byId(responses, 3).result
+      assert.equal(prompts[0].name, 'audit-and-fix')
+      const got = byId(responses, 4).result
+      assert.match(got.messages[0].content.text, /scan/)
+      assert.match(got.messages[0].content.text, /\.cursor\/skills/)
+    })
+
+    test('validate returns the spec-lint envelope', () => {
+      const { structuredContent } = byId(responses, 5).result
+      assert.equal(structuredContent.valid, true)
+      assert.equal(structuredContent.count, 1)
     })
   })
 

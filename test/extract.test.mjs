@@ -22,7 +22,7 @@ describe('non-package specifiers', () => {
     }
   })
 
-  test('a skill referencing only non-packages produces no findings', () => {
+  test('a skill referencing only non-packages is unscorable, not silently empty', () => {
     const { results } = parseJson([
       'audit',
       './fixtures/builtin-skill',
@@ -30,9 +30,9 @@ describe('non-package specifiers', () => {
       FAKE_PROJECT,
       '--json',
     ])
-    assert.deepEqual(results[0].report.findings, [])
     assert.equal(results[0].report.scorableReferenceCount, 0)
     assert.equal(results[0].score.breakdown.specificity, 0)
+    assert.equal(results[0].report.findings[0].kind, 'unscorable')
   })
 })
 
@@ -123,5 +123,37 @@ describe('skill metadata', () => {
     const extracted = parseJson(['extract', './skills/skill-auditor'])
     assert.equal(extracted.skillName, 'skill-auditor')
     assert.deepEqual(extracted.categories, [])
+  })
+
+  test('records the SKILL.md line of a fenced import', () => {
+    const extracted = parseJson(['extract', './fixtures/aligned-skill'])
+    assert.ok(extracted.locations.packages.next.line >= 1)
+    assert.ok(extracted.locations.importSpecifiers['next/navigation'])
+  })
+})
+
+describe('procedural skills', () => {
+  test('a shell-only workflow is not alignment-scored', () => {
+    const { results } = parseJson([
+      'audit',
+      './fixtures/procedural-skill',
+      '--project',
+      FAKE_PROJECT,
+      '--json',
+    ])
+    assert.equal(results[0].score.kind, 'procedural')
+    assert.equal(results[0].score.overall, null)
+  })
+
+  test('the bundled workflow skill is procedural, not a failing technical skill', () => {
+    const { results } = parseJson([
+      'audit',
+      './skills/skill-auditor',
+      '--project',
+      FAKE_PROJECT,
+      '--json',
+    ])
+    assert.equal(results[0].score.kind, 'procedural')
+    assert.equal(results[0].score.overall, null)
   })
 })

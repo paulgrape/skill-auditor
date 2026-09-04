@@ -1,6 +1,6 @@
 ---
 name: frontend-must-have
-description: Must-have checklist for a modern React/Next.js frontend project.
+description: Must-have checklist for a modern React/Next.js frontend project covering routing, state, data fetching, validation, styling and testing. Use when bootstrapping a frontend, reviewing its stack choices, or checking which of these concerns the repo still lacks.
 ---
 
 # Frontend must-have checklist

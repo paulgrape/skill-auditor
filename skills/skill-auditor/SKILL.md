@@ -69,6 +69,7 @@ Always run the technical baseline; parse JSON output.
 
 ```bash
 skill-auditor scan $PROJECT --json
+skill-auditor validate $SKILLS_ROOT --json
 skill-auditor audit $SKILLS_ROOT --project $PROJECT --json
 skill-auditor gaps $SKILLS_ROOT --project $PROJECT --checklist frontend --json
 ```
@@ -86,8 +87,8 @@ From `scan`: note `declaredDeps` and `usedImports` — ground truth for packages
 From `audit`:
 - Always `{ schemaVersion, count, results: [{ skillDir, report, score, suggestions }], errors: [{ skillDir, error }] }` — one result per skill, whether you passed a single skill directory or a skills root
 - `errors` is empty on a clean run; an entry means that skill's `SKILL.md` could not be read — tell the user, do not try to "fix" it by rewriting the file blind
-- Fix skills with low `score.overall` or critical findings using `suggestions`
-- Skip `kind: neutral` skills for alignment fixes (quality-only). Skills whose code is only CSS, HTML or shell are neutral by design
+- Fix skills with low `score.overall` or critical findings using `suggestions`. Each finding includes `location: { line, heading }` pointing at the SKILL.md section to edit
+- Skip `kind: neutral` and `kind: procedural` skills for alignment fixes (quality-only). CSS/HTML-only skills are `neutral`; shell-workflow skills with no JS/Python examples are `procedural`
 
 From `gaps`:
 - `gaps[]` lists uncovered categories (`kind`: `uncovered-category` or `checklist-gap`)
@@ -98,13 +99,14 @@ Checklist key by scope:
 - Default (technical) → `--checklist frontend` for React/Next; omit `--checklist` if stack is unknown and rely on `uncovered-category` gaps.
 - `WEBSITE_SCOPE=yes` only → also use `--checklist website`.
 
-The `website` checklist covers Website Specification domains (`foundations`, `seo`, `accessibility`, `security`, `performance`, `privacy`, `resilience`, `i18n`, `agent-readiness`). These are not npm-package categories — a skill covers a domain by declaring it in a `categories:` frontmatter list:
+The `website` checklist covers Website Specification domains (`foundations`, `seo`, `accessibility`, `security`, `performance`, `privacy`, `resilience`, `i18n`, `agent-readiness`). These are not npm-package categories — a skill covers a domain by declaring it in `metadata.categories` (a comma-separated string; the spec does not allow a top-level `categories:` list):
 
 ```yaml
 ---
 name: my-a11y-skill
-categories:
-  - accessibility
+description: Accessibility patterns for this project. Use when auditing or building accessible UI.
+metadata:
+  categories: accessibility
 ---
 ```
 
@@ -123,30 +125,21 @@ Do not inject fake imports into neutral/behavioral skills just to raise alignmen
 
 ## Step 4 — Create gap skills
 
-For each entry in `gaps.gaps`:
+For each entry in `gaps.gaps`, generate the skill from evidence rather than inventing it:
 
-1. Read `category` (e.g. `state`, `routing`, `testing`)
-2. Read `evidence[]` when present — these are canonical repo examples with file paths
-3. Fall back to `scan` output (`declaredDeps` + `usedImports`) only when `evidence` is empty
-4. Pick import specifiers the repo actually uses (prefer `evidence[].specifier`, then `usedImports`)
-5. Create one skill dir per gap category:
-
-```
-$SKILLS_ROOT/<category>/
-└── SKILL.md
+```bash
+skill-auditor scaffold routing --project $PROJECT --dry-run --json
 ```
 
-### Gap skill template (maximally filled)
+Replace `routing` with the gap's `category`. Inspect `contents`, then write it:
 
-Every generated gap skill must be complete and best-practice-carrying, not a stub. Fill every section from real repo evidence.
+```bash
+skill-auditor scaffold <category> --project $PROJECT --out $SKILLS_ROOT --json
+```
 
-```markdown
----
-name: <project>-<category>
-description: <Category> patterns for this project using <actual-package>. Use when working with <category>, routing, navigation, or related tasks in this codebase.
-categories:
-  - <category>   # only for website-domain gaps (accessibility, seo, etc.)
----
+`--out $SKILLS_ROOT` writes `$SKILLS_ROOT/<category>/SKILL.md`. Then expand the generated Patterns section with a working example that uses the imported bindings (idle import lines are metric stuffing). Do not skip `validate` on the new file.
+
+If you must write the file by hand, use this shape (`metadata.categories` is required for website-domain gaps; package-backed gaps get coverage from their imports):
 
 # <Category>
 
@@ -175,7 +168,7 @@ Canonical examples from `gaps[].evidence[].file`:
 
 Adapt from `evidence[].example`. Use 2–3 blocks when evidence provides enough material.
 
-```tsx
+```text
 // from <evidence-file>
 import { ... } from '<actual-specifier>'
 ...

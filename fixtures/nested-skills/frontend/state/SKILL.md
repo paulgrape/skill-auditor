@@ -1,5 +1,5 @@
 ---
-name: nested-state
+name: state
 description: Nested skill fixture for state.
 ---
 

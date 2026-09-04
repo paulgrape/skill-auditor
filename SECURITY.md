@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 1.3.x   | Yes       |
+| 1.4.x   | Yes       |
+| 1.3.x   | No        |
 | 1.2.x   | No        |
 | 1.1.x   | No        |
 | 1.0.x   | No        |
@@ -27,7 +28,7 @@ We aim to acknowledge reports within a few business days.
 
 Network use is limited to **you** installing the package (`npm install`, `npx`) or cloning skills via the separate [`skills`](https://github.com/vercel-labs/skills) CLI — not performed by `skill-auditor` commands themselves.
 
-`skill-auditor mcp` does not change this. It speaks the Model Context Protocol over stdin/stdout to the client that launched it: no port is opened, no HTTP transport is implemented, and there is no authorization surface. Its tools are read-only and do the same local file analysis as the corresponding commands, on paths the calling agent passes — which are resolved relative to the working directory the server was started in, so start it in a directory you are willing to have analyzed.
+`skill-auditor mcp` does not change this. It speaks the Model Context Protocol over stdin/stdout to the client that launched it: no port is opened, no HTTP transport is implemented, and there is no authorization surface. Most tools are read-only and do the same local file analysis as the corresponding commands. `scaffold` can write a SKILL.md (it defaults to `dryRun: true`). Paths the calling agent passes are resolved relative to the working directory the server was started in; `skill-auditor mcp --confine` rejects paths outside that directory. Start it in a directory you are willing to have analyzed.
 
 ## What this tool is not
 

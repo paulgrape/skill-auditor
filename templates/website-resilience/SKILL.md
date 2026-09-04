@@ -1,8 +1,8 @@
 ---
 name: website-resilience
 description: Graceful-failure essentials for a website — custom error pages with correct status codes, 503 maintenance pages, graceful degradation without JavaScript, web app manifest, and uptime monitoring. Use when building error pages, offline behaviour, or resilience of a site.
-categories:
-  - resilience
+metadata:
+  categories: resilience
 ---
 
 # Website resilience

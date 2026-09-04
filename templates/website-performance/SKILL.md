@@ -1,8 +1,8 @@
 ---
 name: website-performance
 description: Web performance essentials — Core Web Vitals, image optimisation, lazy loading, resource hints, Cache-Control, compression, font loading, and script loading attributes. Use when improving load speed, caching, images, fonts, or Core Web Vitals on a website.
-categories:
-  - performance
+metadata:
+  categories: performance
 ---
 
 # Website performance
