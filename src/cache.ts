@@ -3,6 +3,7 @@ import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { allManifestGlobs, allSourceGlobs } from './ecosystems/globs.js'
 import { setAwareReplacer } from './envelope.js'
 import { DEFAULT_IGNORE } from './ignore.js'
 import type { RepoReality } from './types.js'
@@ -10,24 +11,18 @@ import { readPackageVersion } from './version.js'
 
 /**
  * Caches the RepoReality of a project between runs. The expensive part of a
- * scan is parsing every source file with the TypeScript compiler; an
- * agent's audit-fix-audit loop repeats it many times against an unchanged
- * repo. The cache is keyed on a fingerprint of every file the scan would
- * read (path, mtime, size), so any edit to project source invalidates it —
- * there is no way to get a stale reality by accident, only a slow one.
+ * scan is reading every source file; an agent's audit-fix-audit loop repeats
+ * it many times against an unchanged repo. The cache is keyed on a
+ * fingerprint of every file the scan would read (path, mtime, size), so any
+ * edit to project source invalidates it — there is no way to get a stale
+ * reality by accident, only a slow one.
  *
  * Disk location: `$SKILL_AUDITOR_CACHE_DIR`, else `node_modules/.cache/
  * skill-auditor/` under the project when node_modules exists, else the OS
  * temp dir. `SKILL_AUDITOR_NO_CACHE=1` or `{ cache: false }` bypasses it.
  */
 
-const SOURCE_GLOB = ['**/*.{ts,tsx,js,jsx,mjs,cjs}']
-const MANIFEST_GLOB = [
-  'package.json',
-  '**/package.json',
-  'pnpm-workspace.yaml',
-  '.skill-auditor.json',
-]
+const CONFIG_GLOB = ['.skill-auditor.json']
 
 interface CacheEntry {
   version: string
@@ -36,6 +31,7 @@ interface CacheEntry {
 }
 
 interface SerializedReality {
+  ecosystems?: RepoReality['ecosystems']
   declaredDeps: Record<string, string>
   usedImports: Record<string, string[]>
   usedIdentifiers: Record<string, string[]>
@@ -66,16 +62,19 @@ function cacheFile(projectRoot: string): string {
 
 /**
  * A digest of everything the scan reads plus everything that changes how it
- * reads (ignore globs, tool version). Cheap relative to parsing: one stat
- * per file, no file contents.
+ * reads (ignore globs, parser, tool version). Cheap relative to parsing: one
+ * stat per file, no file contents.
  */
-export function fingerprintProject(projectRoot: string): string {
-  const entries = fg.sync([...SOURCE_GLOB, ...MANIFEST_GLOB], {
-    cwd: projectRoot,
-    ignore: DEFAULT_IGNORE,
-    stats: true,
-    onlyFiles: true,
-  })
+export function fingerprintProject(projectRoot: string, parser = 'lexer'): string {
+  const entries = fg.sync(
+    [...allSourceGlobs(), ...allManifestGlobs(), ...CONFIG_GLOB],
+    {
+      cwd: projectRoot,
+      ignore: DEFAULT_IGNORE,
+      stats: true,
+      onlyFiles: true,
+    },
+  )
   const lines = entries
     .map(entry => {
       const stats = entry.stats
@@ -84,6 +83,7 @@ export function fingerprintProject(projectRoot: string): string {
     .sort()
   const hash = createHash('sha1')
   hash.update(readPackageVersion())
+  hash.update('\n' + parser)
   hash.update('\n' + [...DEFAULT_IGNORE].sort().join(','))
   hash.update('\n' + lines.join('\n'))
   return hash.digest('hex')
@@ -95,6 +95,7 @@ function revive(serialized: SerializedReality): RepoReality {
       Object.entries(record).map(([key, list]) => [key, new Set(list)]),
     )
   return {
+    ecosystems: serialized.ecosystems ?? [],
     declaredDeps: serialized.declaredDeps ?? {},
     usedImports: toSets(serialized.usedImports ?? {}),
     usedIdentifiers: toSets(serialized.usedIdentifiers ?? {}),

@@ -1,0 +1,15 @@
+[project]
+name = "polyglot-backend"
+version = "0.1.0"
+dependencies = [
+  "fastapi>=0.110",
+  "pydantic[email] ~= 2.6",
+  "SQLAlchemy>=2.0; python_version >= '3.10'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+httpx = { version = "^0.27", extras = ["http2"] }

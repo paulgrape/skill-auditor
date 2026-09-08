@@ -11,9 +11,15 @@ you to write a test file.
 
 ```bash
 npx vitest run --reporter=verbose
+# or, from any subdirectory:
 ROOT=$(git rev-parse --show-toplevel)
 npx vitest run "$ROOT"
 ```
 
-The project uses `vitest` as a CLI. Do not invent `import { describe } from 'vitest'`
-examples unless you are editing an existing test file.
+The project uses `vitest` as a CLI (the runner it follows). Do not invent
+`import { describe } from 'vitest'` examples unless you are editing an
+existing test file.
+
+```bash
+npx vitest --version
+```

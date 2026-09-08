@@ -1,8 +1,9 @@
 /**
  * Directories every file walk skips: dependency trees, build output and tool
- * caches. Shared so the repo scan, skill discovery and the spec check cannot
- * drift apart on what counts as project source. A project can add its own
- * globs from `.skill-auditor.json` (see configureIgnore).
+ * caches across the supported ecosystems (npm, Python, Go, Cargo). Shared so
+ * the repo scan, skill discovery and the spec check cannot drift apart on
+ * what counts as project source. A project can add its own globs from
+ * `.skill-auditor.json` (see configureIgnore).
  */
 export const BASE_IGNORE = [
   '**/node_modules/**',
@@ -12,6 +13,16 @@ export const BASE_IGNORE = [
   '**/.turbo/**',
   '**/coverage/**',
   '**/.git/**',
+  // Python
+  '**/.venv/**',
+  '**/venv/**',
+  '**/__pycache__/**',
+  '**/.tox/**',
+  '**/site-packages/**',
+  // Go
+  '**/vendor/**',
+  // Cargo
+  '**/target/**',
 ]
 
 /** The live ignore list; mutated in place so holders of the reference see updates. */

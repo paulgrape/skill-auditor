@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { evidenceForCategory, packagesForCategory } from './gaps.js'
 import { BASE_MUST_HAVE_CHECKLISTS } from './taxonomyData.js'
-import type { ImportEvidence, RepoReality } from './types.js'
+import type { Ecosystem, ImportEvidence, RepoReality } from './types.js'
 
 /**
  * Writes a SKILL.md for one uncovered category from the project's own import
@@ -50,17 +50,41 @@ function uniqueFiles(evidence: ImportEvidence[]): string[] {
   return [...new Set(evidence.map(e => e.file))].slice(0, 5)
 }
 
+/** Fence tag and comment syntax per ecosystem, so the snippet is scored by the right rules. */
+const FENCE: Record<Ecosystem, { tag: string; comment: string; placeholder: (spec: string) => string }> = {
+  npm: {
+    tag: 'ts',
+    comment: '//',
+    placeholder: spec => `import { /* bindings the file uses */ } from '${spec}'`,
+  },
+  python: {
+    tag: 'python',
+    comment: '#',
+    placeholder: spec => `from ${spec} import ...  # the names the file uses`,
+  },
+  go: {
+    tag: 'go',
+    comment: '//',
+    placeholder: spec => `import "${spec}"`,
+  },
+  cargo: {
+    tag: 'rust',
+    comment: '//',
+    placeholder: spec => `use ${spec}::{/* items the file uses */};`,
+  },
+}
+
 function snippetFrom(evidence: ImportEvidence[]): string | undefined {
   const withExample = evidence.find(e => e.example)
   if (!withExample?.example) return undefined
-  const specifier = withExample.specifier
-  const example = withExample.example
-  // Evidence examples are one-line import/require statements. Wrap them so
-  // the generated skill has a fenced usage the auditor can score.
-  if (/^\s*(import|export|const|let|var|require)/.test(example)) {
-    return `\`\`\`ts\n// from ${withExample.file}\n${example}\n\`\`\``
+  const { specifier, example, file } = withExample
+  const fence = FENCE[withExample.ecosystem] ?? FENCE.npm
+  // Evidence examples are one-line import statements. Wrap them so the
+  // generated skill has a fenced usage the auditor can score.
+  if (/^\s*(import|export|const|let|var|require|from|use|extern)\b/.test(example)) {
+    return `\`\`\`${fence.tag}\n${fence.comment} from ${file}\n${example}\n\`\`\``
   }
-  return `\`\`\`ts\n// from ${withExample.file}\nimport { /* bindings the file uses */ } from '${specifier}'\n\`\`\``
+  return `\`\`\`${fence.tag}\n${fence.comment} from ${file}\n${fence.placeholder(specifier)}\n\`\`\``
 }
 
 function descriptionFor(

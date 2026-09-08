@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { repoHasPackage } from './diff.js'
+import { firstPackageLocation, repoHasPackage } from './diff.js'
 import { frontmatterString, parseFrontmatter } from './frontmatter.js'
 import {
   categoriesForPackage,
@@ -24,10 +24,15 @@ import type {
   SkillScore,
 } from './types.js'
 
-function totalTechRefs(skill: SkillIdentifiers): number {
-  return (
-    skill.packages.size + skill.importSpecifiers.size + skill.apiCalls.size
-  )
+/**
+ * Package-backed references: the packages a skill names and the import
+ * specifiers it demonstrates. Only language-aware extraction produces these,
+ * so CSS, shell and prose cannot contribute. API-call-shaped identifiers are
+ * deliberately excluded — `useRouter()` in a sentence made workflow skills
+ * "technical" and graded them on an alignment they never claimed.
+ */
+function packageBackedRefs(skill: SkillIdentifiers): number {
+  return skill.packages.size + skill.importSpecifiers.size
 }
 
 /**
@@ -40,7 +45,7 @@ function totalTechRefs(skill: SkillIdentifiers): number {
  * worth flagging) but no alignment score, like neutral skills.
  */
 export function classifySkillKind(skill: SkillIdentifiers): SkillKind {
-  const refs = totalTechRefs(skill)
+  const refs = packageBackedRefs(skill)
   if (refs === 0) return 'neutral'
   const evidence = skill.codeEvidence
   if (evidence && evidence.codeFences === 0 && evidence.shellFences > 0) {
@@ -219,8 +224,10 @@ export function explainLowScore(
       : list.join(', ')
   }
 
+  const location = firstPackageLocation(skill)
+
   if (report.scorableReferenceCount === 0) {
-    const refs = sample([...skill.importSpecifiers, ...skill.apiCalls])
+    const refs = sample([...skill.packages, ...skill.importSpecifiers])
     return {
       severity: 'info',
       kind: 'unscorable',
@@ -228,6 +235,7 @@ export function explainLowScore(
         (score.breakdown.alignment ?? 0) * 100,
       )}% prior) and specificity is 0%. Either demonstrate the project's real packages with working examples, or accept this as a package-agnostic skill.`,
       skillReference: refs || '(no package references)',
+      location,
     }
   }
 
@@ -244,5 +252,6 @@ export function explainLowScore(
       (score.breakdown.focus ?? 0) * 100,
     )}%. The matched references (${sample(matched)}) are not demonstrated in working code that uses what it imports, so they earn little specificity.`,
     skillReference: sample(Object.keys(skill.packageRefs)),
+    location,
   }
 }

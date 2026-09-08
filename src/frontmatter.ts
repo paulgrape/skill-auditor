@@ -224,20 +224,18 @@ export function frontmatterList(
 }
 
 /**
- * The taxonomy categories a skill declares. The spec-conformant home is
- * `metadata.categories` (a comma- or space-separated string, since metadata
- * values must be strings); a top-level `categories:` list is still read as a
- * legacy fallback and flagged by `validate`.
+ * The taxonomy categories a skill declares: `metadata.categories`, a comma-
+ * or space-separated string (metadata values must be strings per the Agent
+ * Skills spec). A top-level `categories:` list is not a spec field and is no
+ * longer read; `validate` flags it so it can be moved.
  */
 export function declaredCategories(data: Record<string, YamlValue>): string[] {
   const fromMetadata = frontmatterMap(data, 'metadata')?.categories
-  if (fromMetadata) {
-    return fromMetadata
-      .split(/[\s,]+/)
-      .map(s => s.trim())
-      .filter(Boolean)
-  }
-  return frontmatterList(data, 'categories')
+  if (!fromMetadata) return []
+  return fromMetadata
+    .split(/[\s,]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
 }
 
 /** Reads a key as a non-empty string, or undefined when absent or a list. */

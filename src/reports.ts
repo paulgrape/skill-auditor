@@ -3,7 +3,11 @@ import { buildAlignmentReport } from './diff.js'
 import { findSkillDirs } from './discoverSkills.js'
 import { envelope } from './envelope.js'
 import { detectGaps } from './gaps.js'
-import { buildRepoReality, type BuildRepoRealityOptions } from './repoReality.js'
+import {
+  buildRepoReality,
+  resolveParser,
+  type BuildRepoRealityOptions,
+} from './repoReality.js'
 import { explainLowScore, scoreSkill } from './score.js'
 import { extractSkillIdentifiers } from './skillIdentifiers.js'
 import { buildSuggestions } from './suggestions.js'
@@ -85,6 +89,7 @@ export function scanReport(
   const loaded = prepareProject(projectRoot)
   return envelope({
     ...buildRepoReality(projectRoot, options),
+    parser: resolveParser(options.parser),
     config: describeConfig(loaded),
   })
 }

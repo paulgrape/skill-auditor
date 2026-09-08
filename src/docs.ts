@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 import { CONFIG_FILENAME } from './config.js'
 import { envelope, SCHEMA_VERSION } from './envelope.js'
+import { PARSERS } from './repoReality.js'
 import {
   CATEGORY_TAXONOMY,
   MUST_HAVE_CHECKLISTS,
@@ -29,15 +30,17 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
   scan: {
     alwaysJson: true,
     fields: [
+      'ecosystems',
       'declaredDeps',
       'usedImports',
       'usedIdentifiers',
       'importEvidence',
+      'parser',
       'config',
     ],
     description:
-      "The project's ground truth: declared dependencies, the import specifiers and identifiers its source really uses, file-level evidence for each package, and the `.skill-auditor.json` (or package.json) config that was applied.",
-    exitCodes: [OK, CRASH],
+      "The project's ground truth: the ecosystems found (npm, python, go, cargo), declared dependencies merged from every manifest, the import specifiers and identifiers its source really uses, file-level evidence for each package (with the ecosystem it came from), the JS/TS parser used (`lexer` or `ts-morph`), and the `.skill-auditor.json` (or package.json) config that was applied.",
+    exitCodes: [OK, CRASH, USAGE_ERROR],
   },
   extract: {
     alwaysJson: true,
@@ -55,14 +58,14 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
       'codeEvidence',
     ],
     description:
-      'What a SKILL.md claims: the packages, import specifiers and APIs it references, and how substantiated each reference is.',
+      'What a SKILL.md claims: the packages, import specifiers and APIs it references, how substantiated each reference is, and where (`locations`: file and line inside the skill directory).',
     exitCodes: [OK, CRASH],
   },
   audit: {
     alwaysJson: false,
     fields: ['count', 'results', 'errors'],
     description:
-      '`results` is always an array of `{ skillDir, report, score, suggestions }`, one entry per audited skill, even when a single skill directory was passed. `errors` lists skill directories that could not be read as `{ skillDir, error }` and is empty on a clean run. `--baseline` adds a `comparison` object (same shape as the `compare` command).',
+      '`results` is always an array of `{ skillDir, report, score, suggestions }`, one entry per audited skill, even when a single skill directory was passed. Every finding carries `location: { file, line, heading? }` relative to the skill directory. `errors` lists skill directories that could not be read as `{ skillDir, error }` and is empty on a clean run. `--baseline` adds a `comparison` object (same shape as the `compare` command).',
     exitCodes: [
       OK,
       {
@@ -116,9 +119,9 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
   },
   docs: {
     alwaysJson: true,
-    fields: ['tool', 'envelope', 'commands', 'taxonomy', 'config'],
+    fields: ['tool', 'envelope', 'parsers', 'commands', 'taxonomy', 'config'],
     description:
-      'This contract: every command, argument, flag, output shape and exit code, generated from the CLI definition itself, plus the live taxonomy tables a project can extend.',
+      'This contract: every command, argument, flag, output shape and exit code, generated from the CLI definition itself, plus the available parsers and the live taxonomy tables a project can extend.',
     exitCodes: [OK],
   },
   validate: {
@@ -233,7 +236,15 @@ export function buildDocs(program: Command, version: string) {
       field: 'schemaVersion',
       value: SCHEMA_VERSION,
       description:
-        'Every JSON payload starts with this field. It is bumped when a field is removed or changes meaning; new fields may appear without a bump.',
+        'Every JSON payload starts with this field. It is bumped when a field is removed or changes meaning; new fields may appear without a bump. Version 2 (skill-auditor 2.0): finding `location` is always present and carries `file`; top-level `categories:` is not read; skill kind ignores API-call identifiers; `scan` reports `ecosystems` and `parser`.',
+    },
+    parsers: {
+      option: '--parser',
+      env: 'SKILL_AUDITOR_PARSER',
+      values: PARSERS,
+      default: 'lexer',
+      description:
+        'How JS/TS source is read. `lexer` is built in; `ts-morph` uses the TypeScript compiler and requires the optional peer dependency to be installed.',
     },
     commands,
     taxonomy: {

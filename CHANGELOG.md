@@ -3,6 +3,95 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 2.0.0
+
+Ground truth for polyglot projects, a dependency-free JS/TS parser, and a
+stricter JSON contract. `schemaVersion` is now **2**; see "Breaking" for
+what a schema-1 consumer has to change.
+
+### Added
+
+- **Python, Go and Cargo ecosystems.** Declared dependencies are read from
+  `pyproject.toml` (PEP 621, optional groups, `dependency-groups`, Poetry,
+  PDM), `requirements*.txt`, `go.mod` (direct `require` entries, module
+  paths reduced the same way as imports, so `…/go-redis/v9` matches) and
+  `Cargo.toml` (every dependency table, hyphens normalized to `_`). Imports
+  are scanned from `.py`, `.go` and `.rs` sources with comments and strings
+  masked; standard libraries, relative imports and the project's own modules
+  are excluded. Every manifest under the project is read, root first, so a
+  `frontend/` + `backend/` + `services/` repo works without configuration.
+- **`RepoReality.ecosystems`** (`npm` | `python` | `go` | `cargo`, in that
+  order) and **`importEvidence[].ecosystem`**. `scan` prints both, plus the
+  **`parser`** it used.
+- **Built-in JS/TS import lexer** (`src/ecosystems/javascript.ts`) as the
+  default parser. It masks comments, strings, template literals, regex
+  literals and JSX text before reading static imports, re-exports,
+  side-effect imports, `require()` and dynamic `import()`, and records the
+  same bindings ts-morph did. **`--parser ts-morph`** (or
+  `SKILL_AUDITOR_PARSER=ts-morph`) opts back into the TypeScript compiler;
+  ts-morph is now an *optional peer dependency*. A parity test runs both over
+  the fixtures. The cache fingerprint includes the parser.
+- **Skill fences in `python`, `go` and `rust`** are read with the same
+  scanners as the project, so a Gin or Serde example is a real package
+  reference with import bindings and usage-tier substantiation. Bundled
+  `scripts/` and `references/` files are classified by extension the same
+  way. `scaffold` tags its fences with the ecosystem the evidence came from.
+- **`location.file`** on every finding and extracted reference, relative to
+  the skill directory (`SKILL.md`, `scripts/check.py`, …). SARIF
+  `artifactLocation` uses it. `extract` also lists `locations.unusedImports`.
+- **`--no-cache` and `--parser`** on every command that builds a RepoReality
+  (`scan`, `audit`, `audit-all`, `gaps`, `scaffold`). `docs` gains a
+  `parsers` section.
+- Default ignore list covers `.venv`, `venv`, `__pycache__`, `.tox`,
+  `site-packages`, `vendor` and `target` alongside the npm build dirs.
+- Library exports for the per-language scanners (`scanJavaScriptImports`,
+  `scanPythonImports`, `scanGoImports`, `scanRustImports`), manifest readers
+  (`readPyproject`, `readRequirements`, `readGoMod`, `readCargoToml`),
+  `PARSERS`, `resolveParser` and the `SourceImport` / `ImportBinding` types.
+
+### Breaking
+
+- **`schemaVersion: 2`.** Read it before parsing; 1.x payloads are not
+  interchangeable with 2.x ones.
+- **`location` is required** on `DriftFinding`, `PackageReference` and every
+  `SkillIdentifiers.locations` entry, and it now has a `file` field.
+  Findings that concern the whole skill (`category-conflict`, some
+  `metric-stuffing` and `unscorable` findings) point at `SKILL.md` line 1.
+- **Skill kind ignores API calls.** `classifySkillKind` counts package
+  references only (`packages` + `importSpecifiers`). A skill whose only
+  technical content is API-call-shaped identifiers (`readFileSync(`) is
+  `neutral` and gets `overall: null` instead of a graded `mixed` score with
+  an `unscorable` finding. `apiCalls` are still extracted and still drive
+  `unverified-api` findings.
+- **Top-level `categories:` frontmatter is no longer read.** Only
+  `metadata.categories` (a string, per the Agent Skills spec) declares
+  coverage. `validate` keeps warning about the legacy key.
+- **Node.js ≥ 20.** CI runs 20, 22 and 24; the TypeScript target is ES2023.
+- **`ts-morph` is an optional peer dependency.** Install it yourself if you
+  pass `--parser ts-morph`; the default lexer needs nothing.
+- **Go module names** in `declaredDeps` are reduced to
+  `host/owner/repo` (major-version suffix dropped), matching `usedImports`.
+
+### Changed
+
+- `RepoReality` now also carries `ecosystems`; `buildRepoReality` takes
+  `{ cache?, parser? }`.
+- `SkillIdentifiers.categories` documents that it comes from
+  `metadata.categories`; `SkillLocations` gains `unusedImports`.
+- Text output renders locations as `file:line` and SARIF results carry the
+  section heading as a logical location.
+
+### Fixed
+
+- A `# comment` line inside a shell fence no longer starts a new markdown
+  section. Splitting there left half a fence in each section, and the fence
+  regex then paired the orphaned closer with the next opener and read the
+  prose in between as an untagged code block (which could turn a
+  parenthesis in a sentence into an "API call"). Section headings and fence
+  counts for skills with commented shell examples can change as a result.
+- The bundled `skill-auditor` skill had a stray closing fence that swallowed
+  its "Rules for new gap skills" section as code.
+
 ## 1.4.0
 
 Agent-facing additions: spec lint, deterministic gap scaffolding, finding

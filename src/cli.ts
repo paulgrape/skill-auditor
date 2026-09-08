@@ -19,7 +19,12 @@ import {
 } from './formats.js'
 import { requireChecklist } from './gaps.js'
 import { runMcpServer } from './mcp.js'
-import { buildRepoReality } from './repoReality.js'
+import {
+  buildRepoReality,
+  PARSERS,
+  resolveParser,
+  type BuildRepoRealityOptions,
+} from './repoReality.js'
 import {
   auditReport,
   auditSkillsSafely,
@@ -60,8 +65,32 @@ function loadProject(projectRoot: string) {
   }
 }
 
-function cacheOption(noCache: boolean | undefined): { cache?: boolean } {
-  return noCache ? { cache: false } : {}
+/** Options every RepoReality-building command shares: `--no-cache`, `--parser`. */
+interface RealityOptions {
+  cache?: boolean
+  parser?: string
+}
+
+function realityOptions(opts: RealityOptions): BuildRepoRealityOptions {
+  try {
+    resolveParser(opts.parser)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    failUsage(`Invalid --parser: ${message}`)
+  }
+  return {
+    ...(opts.cache === false ? { cache: false } : {}),
+    ...(opts.parser ? { parser: opts.parser } : {}),
+  }
+}
+
+function addRealityOptions(command: Command): Command {
+  return command
+    .option('--no-cache', 'rebuild RepoReality even when the fingerprint matches')
+    .option(
+      '--parser <name>',
+      `JS/TS parser (${PARSERS.join('|')}); ts-morph is an optional peer dependency`,
+    )
 }
 
 function parseFailOn(raw: string): DriftSeverity {
@@ -216,16 +245,19 @@ program
     '\nEvery --json payload carries a schemaVersion. Run `skill-auditor docs` for the full machine-readable contract.',
   )
 
-program
-  .command('scan')
-  .argument('[path]', 'project root to scan', '.')
-  .option('--json', 'emit machine-readable JSON (scan output is always JSON)')
-  .option('--no-cache', 'rebuild RepoReality even when the fingerprint matches')
-  .description('Print the RepoReality (declared deps + used imports) as JSON')
-  .action((path: string, opts: { cache?: boolean }) => {
-    loadProject(path)
-    printJson(scanReport(path, cacheOption(opts.cache === false)))
-  })
+addRealityOptions(
+  program
+    .command('scan')
+    .argument('[path]', 'project root to scan', '.')
+    .option('--json', 'emit machine-readable JSON (scan output is always JSON)')
+    .description(
+      'Print the RepoReality (ecosystems, declared deps, used imports) as JSON',
+    ),
+).action((path: string, opts: RealityOptions) => {
+  const options = realityOptions(opts)
+  loadProject(path)
+  printJson(scanReport(path, options))
+})
 
 program
   .command('extract')
@@ -245,14 +277,14 @@ function auditAction(
     format?: string
     baseline?: string
     failOnRegression?: boolean
-    cache?: boolean
-  },
+  } & RealityOptions,
 ): never {
   const failOn = parseFailOn(opts.failOn)
   const minScore = parseMinScore(opts.minScore)
   const format = resolveFormat(opts)
+  const options = realityOptions(opts)
   loadProject(opts.project)
-  const repo = buildRepoReality(opts.project, cacheOption(opts.cache === false))
+  const repo = buildRepoReality(opts.project, options)
   const { results, errors } = auditSkillsSafely(repo, skillDirs)
   let comparison
   if (opts.baseline) {
@@ -273,30 +305,31 @@ function auditAction(
   })
 }
 
-addAuditFormatOptions(
-  program
-    .command('audit')
-    .argument(
-      '<path>',
-      'skill directory or skills root (scans nested SKILL.md recursively)',
-    )
-    .option('-p, --project <path>', 'project root to audit against', '.')
-    .option(
-      '-f, --fail-on <severity>',
-      'exit non-zero if a finding at/above this severity exists (info|warning|critical)',
-      'critical',
-    )
-    .option(
-      '-m, --min-score <n>',
-      'exit non-zero if any scored skill is below this 0-100 threshold',
-    )
-    .option('--baseline <file>', 'diff this run against a saved audit --json payload')
-    .option(
-      '--fail-on-regression',
-      'exit non-zero when --baseline reports a regressed skill',
-    )
-    .option('--no-cache', 'rebuild RepoReality even when the fingerprint matches')
-    .description('Audit a skill or all skills under a root against the project'),
+addRealityOptions(
+  addAuditFormatOptions(
+    program
+      .command('audit')
+      .argument(
+        '<path>',
+        'skill directory or skills root (scans nested SKILL.md recursively)',
+      )
+      .option('-p, --project <path>', 'project root to audit against', '.')
+      .option(
+        '-f, --fail-on <severity>',
+        'exit non-zero if a finding at/above this severity exists (info|warning|critical)',
+        'critical',
+      )
+      .option(
+        '-m, --min-score <n>',
+        'exit non-zero if any scored skill is below this 0-100 threshold',
+      )
+      .option('--baseline <file>', 'diff this run against a saved audit --json payload')
+      .option(
+        '--fail-on-regression',
+        'exit non-zero when --baseline reports a regressed skill',
+      )
+      .description('Audit a skill or all skills under a root against the project'),
+  ),
 ).action((inputPath: string, opts) => {
   auditAction(resolveSkillPath(inputPath), opts)
 })
@@ -322,52 +355,53 @@ program
     }
   })
 
-addAuditFormatOptions(
+addRealityOptions(
+  addAuditFormatOptions(
+    program
+      .command('audit-all')
+      .argument('[roots...]', 'skill roots to scan (default: .)', ['.'])
+      .option('-p, --project <path>', 'project root to audit against', '.')
+      .option(
+        '-d, --defaults',
+        'also scan well-known project-local skill roots (.cursor/.claude/.agents/.codex)',
+      )
+      .option(
+        '-f, --fail-on <severity>',
+        'exit non-zero if a finding at/above this severity exists (info|warning|critical)',
+        'critical',
+      )
+      .option(
+        '-m, --min-score <n>',
+        'exit non-zero if any scored skill is below this 0-100 threshold',
+      )
+      .option('--baseline <file>', 'diff this run against a saved audit --json payload')
+      .option(
+        '--fail-on-regression',
+        'exit non-zero when --baseline reports a regressed skill',
+      )
+      .description('Audit every skill found under the given roots'),
+  ),
+).action((roots: string[], opts) => {
+  auditAction(findSkillDirs(resolveRoots(roots, opts)), opts)
+})
+
+addRealityOptions(
   program
-    .command('audit-all')
-    .argument('[roots...]', 'skill roots to scan (default: .)', ['.'])
-    .option('-p, --project <path>', 'project root to audit against', '.')
+    .command('gaps')
+    .argument('[roots...]', 'skill roots to scan recursively (default: .)', ['.'])
+    .option('-p, --project <path>', 'project root to analyze', '.')
     .option(
       '-d, --defaults',
       'also scan well-known project-local skill roots (.cursor/.claude/.agents/.codex)',
     )
     .option(
-      '-f, --fail-on <severity>',
-      'exit non-zero if a finding at/above this severity exists (info|warning|critical)',
-      'critical',
+      '-c, --checklist <key>',
+      `must-have checklist key (${Object.keys(MUST_HAVE_CHECKLISTS).join('|')})`,
     )
-    .option(
-      '-m, --min-score <n>',
-      'exit non-zero if any scored skill is below this 0-100 threshold',
-    )
-    .option('--baseline <file>', 'diff this run against a saved audit --json payload')
-    .option(
-      '--fail-on-regression',
-      'exit non-zero when --baseline reports a regressed skill',
-    )
-    .option('--no-cache', 'rebuild RepoReality even when the fingerprint matches')
-    .description('Audit every skill found under the given roots'),
-).action((roots: string[], opts) => {
-  auditAction(findSkillDirs(resolveRoots(roots, opts)), opts)
-})
-
-program
-  .command('gaps')
-  .argument('[roots...]', 'skill roots to scan recursively (default: .)', ['.'])
-  .option('-p, --project <path>', 'project root to analyze', '.')
-  .option(
-    '-d, --defaults',
-    'also scan well-known project-local skill roots (.cursor/.claude/.agents/.codex)',
-  )
-  .option(
-    '-c, --checklist <key>',
-    `must-have checklist key (${Object.keys(MUST_HAVE_CHECKLISTS).join('|')})`,
-  )
-  .option('--fail-on-gap', 'exit non-zero when any gap is found (CI-friendly)')
-  .option('--json', 'emit machine-readable JSON')
-  .option('--no-cache', 'rebuild RepoReality even when the fingerprint matches')
-  .description('Detect uncovered stack categories and checklist gaps')
-  .action(
+    .option('--fail-on-gap', 'exit non-zero when any gap is found (CI-friendly)')
+    .option('--json', 'emit machine-readable JSON')
+    .description('Detect uncovered stack categories and checklist gaps'),
+).action(
     (
       roots: string[],
       opts: {
@@ -376,16 +410,16 @@ program
         checklist?: string
         failOnGap?: boolean
         json?: boolean
-        cache?: boolean
-      },
+      } & RealityOptions,
     ) => {
+      const options = realityOptions(opts)
       loadProject(opts.project)
       const checklist = parseChecklist(opts.checklist)
       const gapReport = gapsReport(
         resolveRoots(roots, opts),
         opts.project,
         checklist,
-        cacheOption(opts.cache === false),
+        options,
       )
       const skillDirs = gapReport.skillDirs
 
@@ -520,20 +554,20 @@ program
     process.exit(payload.valid ? 0 : 1)
   })
 
-program
-  .command('scaffold')
-  .argument('<category>', 'taxonomy category or website-domain to generate a skill for')
-  .option('-p, --project <path>', 'project root to take evidence from', '.')
-  .option('-o, --out <dir>', 'directory to write the skill into', '.')
-  .option('--name <name>', 'skill directory name (defaults to the category)')
-  .option('--force', 'overwrite an existing SKILL.md')
-  .option('--dry-run', 'print the generated SKILL.md without writing it')
-  .option('--json', 'emit machine-readable JSON')
-  .option('--no-cache', 'rebuild RepoReality even when the fingerprint matches')
-  .description(
-    'Generate a SKILL.md for one category from the project\'s real import evidence',
-  )
-  .action(
+addRealityOptions(
+  program
+    .command('scaffold')
+    .argument('<category>', 'taxonomy category or website-domain to generate a skill for')
+    .option('-p, --project <path>', 'project root to take evidence from', '.')
+    .option('-o, --out <dir>', 'directory to write the skill into', '.')
+    .option('--name <name>', 'skill directory name (defaults to the category)')
+    .option('--force', 'overwrite an existing SKILL.md')
+    .option('--dry-run', 'print the generated SKILL.md without writing it')
+    .option('--json', 'emit machine-readable JSON')
+    .description(
+      'Generate a SKILL.md for one category from the project\'s real import evidence',
+    ),
+).action(
     (
       category: string,
       opts: {
@@ -543,14 +577,11 @@ program
         force?: boolean
         dryRun?: boolean
         json?: boolean
-        cache?: boolean
-      },
+      } & RealityOptions,
     ) => {
+      const options = realityOptions(opts)
       loadProject(opts.project)
-      const repo = buildRepoReality(
-        opts.project,
-        cacheOption(opts.cache === false),
-      )
+      const repo = buildRepoReality(opts.project, options)
       const result = scaffoldSkill({
         category,
         repo,

@@ -1,13 +1,16 @@
 import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
+import { scanGoImports } from './ecosystems/go.js'
+import { maskJavaScript, scanJavaScriptImports } from './ecosystems/javascript.js'
+import { scanPythonImports } from './ecosystems/python.js'
+import { scanRustImports } from './ecosystems/rust.js'
+import { lineOf, type SourceImport } from './ecosystems/types.js'
 import {
   declaredCategories,
   frontmatterString,
   parseFrontmatter,
 } from './frontmatter.js'
-import { topLevelPackage } from './packageNames.js'
-import { isPythonStdlib } from './pythonStdlib.js'
 import { isKnownPackage, PROSE_MIN_WORDS } from './taxonomy.js'
 import type {
   PackageReference,
@@ -23,102 +26,42 @@ const INLINE_CODE_RE = /`([^`\n]+)`/g
 
 /**
  * Which extraction rules apply to a fenced block, decided by its language
- * tag. Only JS/TS-family code can carry npm imports and API calls; running
- * the JS regexes over CSS, HTML or shell turns `@media (` and `$(` into
- * "API calls" and pushes a prose skill out of the neutral bucket. Untagged
- * fences get both the JS and the Python rules, since many skills omit the tag.
+ * tag. Only code in a language with a package ecosystem can carry package
+ * references; running import rules over CSS, HTML or shell turns `@media (`
+ * and `$(` into "API calls" and pushes a prose skill out of the neutral
+ * bucket. Untagged fences get the JS and Python rules, since many skills omit
+ * the tag and those two are the ambiguous ones in practice.
  */
-type FenceLanguage = 'js' | 'python' | 'untagged' | 'other'
+type FenceLanguage = 'js' | 'python' | 'go' | 'rust' | 'untagged' | 'other'
 
-const JS_FENCE_TAGS = new Set([
-  'js',
-  'jsx',
-  'ts',
-  'tsx',
-  'mjs',
-  'cjs',
-  'mts',
-  'cts',
-  'javascript',
-  'typescript',
-])
-const PYTHON_FENCE_TAGS = new Set(['py', 'python', 'python3'])
+const FENCE_TAGS: Record<Exclude<FenceLanguage, 'untagged' | 'other'>, string[]> = {
+  js: ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'javascript', 'typescript'],
+  python: ['py', 'python', 'python3'],
+  go: ['go', 'golang'],
+  rust: ['rs', 'rust'],
+}
+
+const TAG_TO_LANGUAGE = new Map<string, FenceLanguage>(
+  Object.entries(FENCE_TAGS).flatMap(([language, tags]) =>
+    tags.map(tag => [tag, language as FenceLanguage] as const),
+  ),
+)
 
 function classifyFence(tag: string): FenceLanguage {
   const normalized = tag.toLowerCase()
   if (normalized === '') return 'untagged'
-  if (JS_FENCE_TAGS.has(normalized)) return 'js'
-  if (PYTHON_FENCE_TAGS.has(normalized)) return 'python'
-  return 'other'
+  return TAG_TO_LANGUAGE.get(normalized) ?? 'other'
 }
 
-/** import ... from "pkg"  |  import "pkg" */
-const IMPORT_FROM_RE = /import\s+(?:[\w*{}\s,]+\s+from\s+)?["']([^"']+)["']/g
-/** require("pkg") */
-const REQUIRE_RE = /require\(\s*["']([^"']+)["']\s*\)/g
-/** Python: import pkg | from pkg import x */
-const PY_IMPORT_RE = /(?:^|\n)\s*(?:import|from)\s+([\w.]+)/g
 /** Bare API-call-shaped identifiers: someFunction( or useSomething( */
 const API_CALL_RE = /\b([a-zA-Z_$][\w$]*)\s*\(/g
+/** Control-flow words that look like calls but are not API surface. */
+const JS_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'function', 'return'])
 
 const SUBSTANTIATION_RANK: Record<ReferenceSubstantiation, number> = {
   mention: 0,
   fenced: 1,
   usage: 2,
-}
-
-/**
- * One binding introduced by an import clause. `source` is the name exported
- * by the package (what the repo scan records for named imports) and `local`
- * is the identifier the snippet uses; they differ only for `a as b`.
- */
-interface ImportBinding {
-  source: string
-  local: string
-}
-
-/**
- * Parses the bindings introduced by a JS import statement's clause, e.g.
- * `import Default, { a, b as c } from 'x'` ->
- * [{Default}, {a}, {source: "b", local: "c"}].
- * Returns [] for side-effect imports (`import 'x'`). Default and namespace
- * imports have no source name of their own, so their local name stands in.
- */
-function importBindings(importStatement: string): ImportBinding[] {
-  const clauseMatch = importStatement.match(
-    /import\s+([\w*{}\s,$]+?)\s+from\s+["']/,
-  )
-  if (!clauseMatch) return []
-  const clause = clauseMatch[1]
-  const bindings: ImportBinding[] = []
-
-  const namespace = clause.match(/\*\s+as\s+([\w$]+)/)
-  if (namespace) bindings.push({ source: namespace[1], local: namespace[1] })
-
-  const braces = clause.match(/\{([^}]*)\}/)
-  if (braces) {
-    for (const part of braces[1].split(',')) {
-      const trimmed = part.trim()
-      if (!trimmed) continue
-      const asMatch = trimmed.match(/^([\w$]+)\s+as\s+([\w$]+)$/)
-      if (asMatch) {
-        bindings.push({ source: asMatch[1], local: asMatch[2] })
-      } else {
-        const name = trimmed.split(/\s+/)[0]
-        bindings.push({ source: name, local: name })
-      }
-    }
-  }
-
-  const defaultName = clause
-    .replace(/\{[^}]*\}/g, '')
-    .replace(/\*\s+as\s+[\w$]+/g, '')
-    .split(',')
-    .map(s => s.trim())
-    .find(s => /^[\w$]+$/.test(s))
-  if (defaultName) bindings.push({ source: defaultName, local: defaultName })
-
-  return bindings
 }
 
 function escapeRegExp(text: string): string {
@@ -135,135 +78,128 @@ function identifierUsedIn(code: string, identifier: string): boolean {
   return re.test(code)
 }
 
+/** What one snippet contributes, with 0-based line offsets inside the snippet. */
 interface CodeAnalysis {
-  /** package -> best substantiation tier found in this code */
-  packages: Map<string, ReferenceSubstantiation>
-  /** package -> imported binding names */
+  /** package -> best substantiation tier found in this code, and where */
+  packages: Map<string, { tier: ReferenceSubstantiation; line: number }>
+  /** package -> imported binding names (exported names) */
   importedIdentifiers: Map<string, Set<string>>
-  importSpecifiers: Set<string>
-  apiCalls: Set<string>
-  /** import statements whose bindings are never used below them */
-  unusedImportCount: number
+  importSpecifiers: Map<string, number>
+  apiCalls: Map<string, number>
+  /** lines of import statements whose bindings are never used below them */
+  unusedImportLines: number[]
 }
 
 function emptyAnalysis(): CodeAnalysis {
   return {
     packages: new Map(),
     importedIdentifiers: new Map(),
-    importSpecifiers: new Set(),
-    apiCalls: new Set(),
-    unusedImportCount: 0,
+    importSpecifiers: new Map(),
+    apiCalls: new Map(),
+    unusedImportLines: [],
+  }
+}
+
+function upgrade(
+  result: CodeAnalysis,
+  pkg: string,
+  tier: ReferenceSubstantiation,
+  line: number,
+): void {
+  const current = result.packages.get(pkg)
+  if (!current) {
+    result.packages.set(pkg, { tier, line })
+  } else if (SUBSTANTIATION_RANK[tier] > SUBSTANTIATION_RANK[current.tier]) {
+    current.tier = tier
   }
 }
 
 /**
- * Analyzes one code snippet (fenced block, inline span or bundled script
- * file) with the rules for its language. Distinguishes imports whose bindings
- * are actually used ('usage') from imports that just sit there ('fenced') —
- * the latter is the cheapest way to stuff references into a skill, so it is
- * worth almost nothing.
+ * Folds a language scanner's imports into an analysis. Distinguishes imports
+ * whose bindings are actually used ('usage') from imports that just sit
+ * there ('fenced') — the latter is the cheapest way to stuff references into
+ * a skill, so it is worth almost nothing. The same rule applies to every
+ * language: `import numpy as np` is usage only if `np` appears below it.
  */
-function analyzeCode(code: string, language: FenceLanguage): CodeAnalysis {
-  if (language === 'other') return emptyAnalysis()
-  if (language === 'python') return analyzePython(code)
-  const result = analyzeJavaScript(code)
-  if (language === 'untagged') {
-    for (const [pkg, tier] of analyzePython(code).packages) {
-      if (!result.packages.has(pkg)) result.packages.set(pkg, tier)
-    }
-  }
-  return result
-}
-
-/**
- * Python snippets can only tell us which modules they import. There is no
- * npm-side ground truth to verify them against, so they count as fenced
- * references at most; stdlib modules are not packages and are dropped.
- */
-function analyzePython(code: string): CodeAnalysis {
+function analyzeImports(code: string, imports: SourceImport[]): CodeAnalysis {
   const result = emptyAnalysis()
-  for (const m of code.matchAll(PY_IMPORT_RE)) {
-    // Skip JS imports that also match this pattern ("import Link from '...'"):
-    // JS import lines always quote the module specifier, Python's never do.
-    const lineStart = code.lastIndexOf('\n', m.index ?? 0) + 1
-    const lineEnd = code.indexOf('\n', (m.index ?? 0) + 1)
-    const line = code.slice(lineStart, lineEnd === -1 ? undefined : lineEnd)
-    if (/["']/.test(line)) continue
+  for (const imp of imports) {
+    const pkg = imp.packageName
+    if (!pkg) continue
+    const line = lineOf(code, imp.start)
+    if (!result.importSpecifiers.has(imp.specifier)) {
+      result.importSpecifiers.set(imp.specifier, line)
+    }
 
-    const pkg = m[1].split('.')[0]
-    if (!pkg || isPythonStdlib(pkg)) continue
-    result.packages.set(pkg, 'fenced')
+    if (!imp.bindingsKnown || imp.bindings.length === 0) {
+      // require()/dynamic import results are not tracked; side-effect and
+      // glob imports have nothing to use. Fenced-level evidence at most.
+      upgrade(result, pkg, 'fenced', line)
+      continue
+    }
+
+    // Verification against the repo compares exported names, which is what
+    // the repo scan records for named imports...
+    const ids = result.importedIdentifiers.get(pkg) ?? new Set<string>()
+    for (const binding of imp.bindings) ids.add(binding.source)
+    result.importedIdentifiers.set(pkg, ids)
+
+    // ...while usage is judged by the local name the snippet actually writes.
+    const codeAfterImport = code.slice(0, imp.start) + code.slice(imp.end)
+    const used = imp.bindings.some(b => identifierUsedIn(codeAfterImport, b.local))
+    if (used) {
+      upgrade(result, pkg, 'usage', line)
+    } else {
+      result.unusedImportLines.push(line)
+      upgrade(result, pkg, 'fenced', line)
+    }
   }
   return result
 }
 
 function analyzeJavaScript(code: string): CodeAnalysis {
-  const result = emptyAnalysis()
-
-  const upgrade = (pkg: string, tier: ReferenceSubstantiation) => {
-    const current = result.packages.get(pkg)
-    if (!current || SUBSTANTIATION_RANK[tier] > SUBSTANTIATION_RANK[current]) {
-      result.packages.set(pkg, tier)
-    }
+  const result = analyzeImports(code, scanJavaScriptImports(code))
+  // API calls are read from the masked text so a call inside a comment or a
+  // string is not counted.
+  const { text } = maskJavaScript(code)
+  for (const m of text.matchAll(API_CALL_RE)) {
+    if (JS_KEYWORDS.has(m[1]) || result.apiCalls.has(m[1])) continue
+    result.apiCalls.set(m[1], lineOf(text, m.index))
   }
-
-  for (const m of code.matchAll(IMPORT_FROM_RE)) {
-    const specifier = m[1]
-    const pkg = topLevelPackage(specifier)
-    if (!pkg) continue
-    result.importSpecifiers.add(specifier)
-
-    const bindings = importBindings(m[0])
-    const codeAfterImport =
-      code.slice(0, m.index) + code.slice((m.index ?? 0) + m[0].length)
-    // Usage is judged by the local name the snippet actually writes...
-    const used = bindings.filter(b => identifierUsedIn(codeAfterImport, b.local))
-
-    // ...while verification against the repo compares source names, which is
-    // what the repo scan records for named imports.
-    if (bindings.length > 0) {
-      const ids = result.importedIdentifiers.get(pkg) ?? new Set<string>()
-      for (const b of bindings) ids.add(b.source)
-      result.importedIdentifiers.set(pkg, ids)
-    }
-
-    if (bindings.length > 0 && used.length === 0) {
-      result.unusedImportCount++
-      upgrade(pkg, 'fenced')
-    } else if (used.length > 0) {
-      upgrade(pkg, 'usage')
-    } else {
-      // side-effect import — can't verify usage, treat as fenced
-      upgrade(pkg, 'fenced')
-    }
-  }
-
-  for (const m of code.matchAll(REQUIRE_RE)) {
-    const specifier = m[1]
-    const pkg = topLevelPackage(specifier)
-    if (!pkg) continue
-    result.importSpecifiers.add(specifier)
-    // A bare require() call is at least fenced-level evidence; if its result
-    // is assigned and the variable reused, the API_CALL/identifier heuristics
-    // don't track it, so stay conservative.
-    upgrade(pkg, 'fenced')
-  }
-
-  for (const m of code.matchAll(API_CALL_RE)) {
-    // Filter out generic JS keywords/control-flow that aren't real API surface.
-    const KEYWORDS = new Set([
-      'if',
-      'for',
-      'while',
-      'switch',
-      'catch',
-      'function',
-      'return',
-    ])
-    if (!KEYWORDS.has(m[1])) result.apiCalls.add(m[1])
-  }
-
   return result
+}
+
+/** Analyzes one code snippet with the rules for its language. */
+function analyzeCode(code: string, language: FenceLanguage): CodeAnalysis {
+  switch (language) {
+    case 'other':
+      return emptyAnalysis()
+    case 'python':
+      return analyzeImports(code, scanPythonImports(code))
+    case 'go':
+      return analyzeImports(code, scanGoImports(code))
+    case 'rust':
+      return analyzeImports(code, scanRustImports(code))
+    case 'js':
+      return analyzeJavaScript(code)
+    case 'untagged': {
+      const result = analyzeJavaScript(code)
+      const python = analyzeImports(code, scanPythonImports(code))
+      for (const [pkg, entry] of python.packages) {
+        if (!result.packages.has(pkg)) result.packages.set(pkg, entry)
+      }
+      for (const [spec, line] of python.importSpecifiers) {
+        if (!result.importSpecifiers.has(spec)) result.importSpecifiers.set(spec, line)
+      }
+      for (const [pkg, ids] of python.importedIdentifiers) {
+        const target = result.importedIdentifiers.get(pkg) ?? new Set<string>()
+        for (const id of ids) target.add(id)
+        result.importedIdentifiers.set(pkg, target)
+      }
+      result.unusedImportLines.push(...python.unusedImportLines)
+      return result
+    }
+  }
 }
 
 const SHELL_FENCE_TAGS = new Set([
@@ -320,8 +256,13 @@ function splitSections(body: string, firstLine: number): MarkdownSection[] {
   const chunks: { lines: string[]; startLine: number }[] = []
   let current: string[] = []
   let currentStart = firstLine
+  // A `# comment` inside a shell fence is not a heading. Splitting there
+  // would leave half a fence in each chunk, and the fence regex would then
+  // pair the orphaned closer with the next opener and read prose as code.
+  let inFence = false
   lines.forEach((line, index) => {
-    if (/^#{1,6}\s/.test(line) && current.length > 0) {
+    if (/^\s*```/.test(line)) inFence = !inFence
+    if (!inFence && /^#{1,6}\s/.test(line) && current.length > 0) {
       chunks.push({ lines: current, startLine: currentStart })
       current = []
       currentStart = firstLine + index
@@ -381,11 +322,21 @@ function splitSections(body: string, firstLine: number): MarkdownSection[] {
   })
 }
 
+/** Builds a location factory for one file and section. */
+type Locator = (lineOffset: number) => SourceLocation
+
+function locator(file: string, baseLine: number, heading?: string): Locator {
+  return lineOffset =>
+    heading
+      ? { file, line: baseLine + lineOffset, heading }
+      : { file, line: baseLine + lineOffset }
+}
+
 /**
  * Extracts identifiers from a skill directory: the SKILL.md body's code-shaped
  * text (section-aware, with substantiation tracking), plus any bundled
  * scripts/references verbatim (those are already code, no markdown stripping
- * needed).
+ * needed). Every reference carries the file and line it was first seen at.
  */
 export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
   const skillMdPath = path.join(skillDir, 'SKILL.md')
@@ -406,7 +357,7 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     packageRefs: {},
     importedIdentifiers: {},
     unusedImportCount: 0,
-    locations: { packages: {}, importSpecifiers: {}, apiCalls: {} },
+    locations: { packages: {}, importSpecifiers: {}, apiCalls: {}, unusedImports: [] },
     codeEvidence: { codeFences: 0, shellFences: 0 },
   }
 
@@ -414,19 +365,17 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     pkg: string,
     tier: ReferenceSubstantiation,
     proseOk: boolean,
-    location?: SourceLocation,
+    location: SourceLocation,
   ) => {
     result.packages.add(pkg)
-    if (location && !result.locations.packages[pkg]) {
-      result.locations.packages[pkg] = location
-    }
+    if (!result.locations.packages[pkg]) result.locations.packages[pkg] = location
     const existing = result.packageRefs[pkg]
     if (!existing) {
       result.packageRefs[pkg] = {
         packageName: pkg,
         substantiation: tier,
         substantiatedByProse: proseOk,
-        ...(location ? { location } : {}),
+        location,
       } satisfies PackageReference
       return
     }
@@ -438,33 +387,30 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     existing.substantiatedByProse = existing.substantiatedByProse || proseOk
   }
 
-  /** Folds one snippet's analysis in. `location` is undefined for bundled files. */
-  const mergeAnalysis = (
-    analysis: CodeAnalysis,
-    proseOk: boolean,
-    location?: SourceLocation,
-  ) => {
-    for (const [pkg, tier] of analysis.packages) {
-      recordRef(pkg, tier, proseOk, location)
+  /** Folds one snippet's analysis in, resolving snippet lines through `at`. */
+  const mergeAnalysis = (analysis: CodeAnalysis, proseOk: boolean, at: Locator) => {
+    for (const [pkg, { tier, line }] of analysis.packages) {
+      recordRef(pkg, tier, proseOk, at(line))
     }
     for (const [pkg, ids] of analysis.importedIdentifiers) {
       const target = result.importedIdentifiers[pkg] ?? new Set<string>()
       for (const id of ids) target.add(id)
       result.importedIdentifiers[pkg] = target
     }
-    for (const spec of analysis.importSpecifiers) {
+    for (const [spec, line] of analysis.importSpecifiers) {
       result.importSpecifiers.add(spec)
-      if (location && !result.locations.importSpecifiers[spec]) {
-        result.locations.importSpecifiers[spec] = location
+      if (!result.locations.importSpecifiers[spec]) {
+        result.locations.importSpecifiers[spec] = at(line)
       }
     }
-    for (const call of analysis.apiCalls) {
+    for (const [call, line] of analysis.apiCalls) {
       result.apiCalls.add(call)
-      if (location && !result.locations.apiCalls[call]) {
-        result.locations.apiCalls[call] = location
-      }
+      if (!result.locations.apiCalls[call]) result.locations.apiCalls[call] = at(line)
     }
-    result.unusedImportCount += analysis.unusedImportCount
+    result.unusedImportCount += analysis.unusedImportLines.length
+    for (const line of analysis.unusedImportLines) {
+      result.locations.unusedImports.push(at(line))
+    }
   }
 
   const yieldedReferences = (analysis: CodeAnalysis) =>
@@ -472,16 +418,9 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     analysis.importSpecifiers.size > 0 ||
     analysis.apiCalls.size > 0
 
-  /** `locate` is false for bundled reference files, whose lines are not SKILL.md's. */
-  const mergeMarkdown = (markdown: string, firstLine: number, locate: boolean) => {
+  const mergeMarkdown = (markdown: string, firstLine: number, file: string) => {
     for (const section of splitSections(markdown, firstLine)) {
       const proseOk = section.proseWords >= PROSE_MIN_WORDS
-      const at = (line: number): SourceLocation | undefined =>
-        locate
-          ? section.heading
-            ? { line, heading: section.heading }
-            : { line }
-          : undefined
 
       for (const block of section.fencedBlocks) {
         if (SHELL_FENCE_TAGS.has(block.tag)) result.codeEvidence.shellFences++
@@ -489,36 +428,40 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
         if (block.language !== 'other' && yieldedReferences(analysis)) {
           result.codeEvidence.codeFences++
         }
-        mergeAnalysis(analysis, proseOk, at(block.line))
+        // Code starts on the line after the fence opener.
+        mergeAnalysis(analysis, proseOk, locator(file, block.line + 1, section.heading))
       }
 
       // Inline code spans: imports/requires still count as code, but a
       // package name that only ever appears inline is a bare mention.
       for (const span of section.inlineSpans) {
+        const at = locator(file, span.line, section.heading)
         const analysis = analyzeCode(span.text, 'untagged')
         // Downgrade anything found in an inline span to 'mention' — a
         // one-line span is never a demonstrated usage.
         const downgraded: CodeAnalysis = {
           ...analysis,
           packages: new Map(
-            [...analysis.packages.keys()].map(pkg => [pkg, 'mention' as const]),
+            [...analysis.packages].map(([pkg, entry]) => [
+              pkg,
+              { tier: 'mention' as const, line: entry.line },
+            ]),
           ),
-          unusedImportCount: 0,
+          unusedImportLines: [],
         }
-        mergeAnalysis(downgraded, proseOk, at(span.line))
+        mergeAnalysis(downgraded, proseOk, at)
 
         // Bare package-name mentions (`tailwindcss`, `@tanstack/react-query`):
         // count them as mention-tier references when they are unambiguous —
         // taxonomy-known names or scoped package names.
         const trimmed = span.text.trim()
         const isScoped = /^@[\w.-]+\/[\w.-]+$/.test(trimmed)
-        if (isScoped || isKnownPackage(trimmed))
-          recordRef(trimmed, 'mention', proseOk, at(span.line))
+        if (isScoped || isKnownPackage(trimmed)) recordRef(trimmed, 'mention', proseOk, at(0))
       }
     }
   }
 
-  mergeMarkdown(body, bodyStartLine, true)
+  mergeMarkdown(body, bodyStartLine, 'SKILL.md')
 
   // Bundled scripts/references: the file extension plays the role of the
   // fence tag. Markdown references go through the same section-aware pass as
@@ -533,10 +476,15 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     const language = classifyFence(extension)
     const isMarkdown = extension === 'md' || extension === 'mdx'
     if (language === 'other' && !isMarkdown) continue
+    const relative = path.relative(skillDir, file).replace(/\\/g, '/')
     try {
       const text = fs.readFileSync(file, 'utf-8').replace(/\r\n/g, '\n')
-      if (isMarkdown) mergeMarkdown(parseFrontmatter(text).body, 1, false)
-      else mergeAnalysis(analyzeCode(text, language), true)
+      if (isMarkdown) {
+        const parsed = parseFrontmatter(text)
+        mergeMarkdown(parsed.body, parsed.bodyStartLine, relative)
+      } else {
+        mergeAnalysis(analyzeCode(text, language), true, locator(relative, 1))
+      }
     } catch {
       // binary/unreadable asset, skip
     }

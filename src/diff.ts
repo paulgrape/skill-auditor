@@ -14,12 +14,25 @@ import type {
   SourceLocation,
 } from './types.js'
 
-/** Attaches a location to a finding when the skill recorded one. */
-function locate<T extends DriftFinding>(
-  finding: T,
-  location: SourceLocation | undefined,
-): T {
-  return location ? { ...finding, location } : finding
+/**
+ * Where a finding about the skill as a whole points: the top of SKILL.md.
+ * Also the fallback for a reference the extractor could not place (only
+ * synthetic SkillIdentifiers built outside the extractor lack locations).
+ */
+export const SKILL_WIDE_LOCATION: SourceLocation = { file: 'SKILL.md', line: 1 }
+
+/** The location of a package reference, falling back to the skill as a whole. */
+export function packageLocation(skill: SkillIdentifiers, pkg: string): SourceLocation {
+  return skill.locations.packages[pkg] ?? SKILL_WIDE_LOCATION
+}
+
+/** The location of the first (alphabetically) of the given packages. */
+export function firstPackageLocation(
+  skill: SkillIdentifiers,
+  packages: Iterable<string> = skill.packages,
+): SourceLocation {
+  const [first] = [...packages].sort()
+  return first === undefined ? SKILL_WIDE_LOCATION : packageLocation(skill, first)
 }
 
 /** True if repo declares OR actually imports this top-level package. */
@@ -104,14 +117,13 @@ function detectMetricStuffing(
     if (
       mentionOnly.length / refs.length > STUFFING_THRESHOLDS.mentionHeavyRatio
     ) {
+      const names = mentionOnly.map(r => r.packageName).sort()
       findings.push({
         severity: 'warning',
         kind: 'metric-stuffing',
         message: `${mentionOnly.length} of ${refs.length} referenced packages are bare name-drops with no code example or explanation. Add real, repo-grounded examples or remove the padding.`,
-        skillReference: mentionOnly
-          .map(r => r.packageName)
-          .sort()
-          .join(', '),
+        skillReference: names.join(', '),
+        location: firstPackageLocation(skill, names),
       })
     }
   }
@@ -124,6 +136,7 @@ function detectMetricStuffing(
       kind: 'metric-stuffing',
       message: `${skill.unusedImportCount} import statements in the skill's code blocks have bindings that are never used. Imports must appear inside working examples, not as standalone lines.`,
       skillReference: 'unused imports',
+      location: skill.locations.unusedImports[0] ?? SKILL_WIDE_LOCATION,
     })
   }
 
@@ -136,11 +149,13 @@ function detectMetricStuffing(
   }
   for (const [category, pkgs] of byCategory) {
     if (pkgs.length >= STUFFING_THRESHOLDS.categoryPadding) {
+      const names = pkgs.sort()
       findings.push({
         severity: 'warning',
         kind: 'metric-stuffing',
         message: `Skill references ${pkgs.length} different ${category} packages. Cover the one the project actually uses; comparisons of alternatives belong in prose, not as scored references.`,
-        skillReference: pkgs.sort().join(', '),
+        skillReference: names.join(', '),
+        location: firstPackageLocation(skill, names),
       })
     }
   }
@@ -156,6 +171,7 @@ function detectMetricStuffing(
         kind: 'metric-stuffing',
         message: `Skill references ${mirrored.length} of the project's ${declared.length} declared dependencies — this looks like a pasted dependency list. Focus the skill on one concern with real examples.`,
         skillReference: 'dependency-list mirror',
+        location: firstPackageLocation(skill, mirrored),
       })
     }
   }
@@ -186,25 +202,21 @@ function verifyIdentifiers(
 
     if (matched.length > 0) verified.add(pkg)
     if (unmatched.length > 0) {
-      findings.push(
-        locate(
-          {
-            severity: 'info',
-            kind: 'unverified-api',
-            message: `Skill demonstrates ${unmatched
-              .sort()
-              .map(id => `"${id}"`)
-              .join(', ')} from "${pkg}", but the project never imports ${
-              unmatched.length === 1 ? 'it' : 'them'
-            }. Prefer the APIs the repo actually uses (project imports: ${[...repoIds]
-              .sort()
-              .join(', ')}).`,
-            skillReference: `${pkg}: ${unmatched.sort().join(', ')}`,
-            repoReality: [...repoIds].sort().join(', '),
-          },
-          skill.locations.packages[pkg],
-        ),
-      )
+      findings.push({
+        severity: 'info',
+        kind: 'unverified-api',
+        message: `Skill demonstrates ${unmatched
+          .sort()
+          .map(id => `"${id}"`)
+          .join(', ')} from "${pkg}", but the project never imports ${
+          unmatched.length === 1 ? 'it' : 'them'
+        }. Prefer the APIs the repo actually uses (project imports: ${[...repoIds]
+          .sort()
+          .join(', ')}).`,
+        skillReference: `${pkg}: ${unmatched.sort().join(', ')}`,
+        repoReality: [...repoIds].sort().join(', '),
+        location: packageLocation(skill, pkg),
+      })
     }
   }
 
@@ -220,7 +232,7 @@ export function buildAlignmentReport(
   let scorableReferenceCount = 0
 
   for (const pkg of [...skill.packages].sort()) {
-    const location = skill.locations.packages[pkg]
+    const location = packageLocation(skill, pkg)
     if (repoHasPackage(pkg, repo)) {
       matchedReferenceCount++
       scorableReferenceCount++
@@ -246,49 +258,37 @@ export function buildAlignmentReport(
         const rivals = [
           ...new Set(conflicting.flatMap(entry => entry.rivals)),
         ].sort()
-        findings.push(
-          locate(
-            {
-              severity: 'critical',
-              kind: 'category-conflict',
-              message: `Skill uses "${pkg}" (${scope}); project uses "${rivals.join(
-                '", "',
-              )}" for the same concern.`,
-              skillReference: pkg,
-              repoReality: rivals.join(', '),
-            },
-            location,
-          ),
-        )
+        findings.push({
+          severity: 'critical',
+          kind: 'category-conflict',
+          message: `Skill uses "${pkg}" (${scope}); project uses "${rivals.join(
+            '", "',
+          )}" for the same concern.`,
+          skillReference: pkg,
+          repoReality: rivals.join(', '),
+          location,
+        })
       } else {
         const scope = categories.join('/')
-        findings.push(
-          locate(
-            {
-              severity: 'warning',
-              kind: 'missing-dependency',
-              message: `Skill uses "${pkg}" (${scope}); project has no ${scope} library.`,
-              skillReference: pkg,
-            },
-            location,
-          ),
-        )
+        findings.push({
+          severity: 'warning',
+          kind: 'missing-dependency',
+          message: `Skill uses "${pkg}" (${scope}); project has no ${scope} library.`,
+          skillReference: pkg,
+          location,
+        })
       }
       continue
     }
 
     // Unknown package, not in repo: low-confidence, excluded from denominator.
-    findings.push(
-      locate(
-        {
-          severity: 'info',
-          kind: 'unused-reference',
-          message: `Skill references "${pkg}", which the project does not use (no known category).`,
-          skillReference: pkg,
-        },
-        location,
-      ),
-    )
+    findings.push({
+      severity: 'info',
+      kind: 'unused-reference',
+      message: `Skill references "${pkg}", which the project does not use (no known category).`,
+      skillReference: pkg,
+      location,
+    })
   }
 
   // Deprecated-API pass: gated on repo actually using the successor API.
@@ -298,18 +298,14 @@ export function buildAlignmentReport(
 
     for (const api of rule.deprecatedApiCalls ?? []) {
       if (skill.apiCalls.has(api)) {
-        findings.push(
-          locate(
-            {
-              severity: 'critical',
-              kind: 'deprecated-api',
-              message: `${rule.message} (${rule.framework}: "${api}")`,
-              skillReference: api,
-              repoReality: evidence,
-            },
-            skill.locations.apiCalls[api],
-          ),
-        )
+        findings.push({
+          severity: 'critical',
+          kind: 'deprecated-api',
+          message: `${rule.message} (${rule.framework}: "${api}")`,
+          skillReference: api,
+          repoReality: evidence,
+          location: skill.locations.apiCalls[api] ?? SKILL_WIDE_LOCATION,
+        })
       }
     }
 
@@ -318,18 +314,14 @@ export function buildAlignmentReport(
         specifierMatches(s, spec),
       )
       if (hit) {
-        findings.push(
-          locate(
-            {
-              severity: 'critical',
-              kind: 'deprecated-api',
-              message: `${rule.message} (${rule.framework}: "${spec}")`,
-              skillReference: spec,
-              repoReality: evidence,
-            },
-            skill.locations.importSpecifiers[hit],
-          ),
-        )
+        findings.push({
+          severity: 'critical',
+          kind: 'deprecated-api',
+          message: `${rule.message} (${rule.framework}: "${spec}")`,
+          skillReference: spec,
+          repoReality: evidence,
+          location: skill.locations.importSpecifiers[hit] ?? SKILL_WIDE_LOCATION,
+        })
       }
     }
   }

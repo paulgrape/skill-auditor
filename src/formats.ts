@@ -37,9 +37,8 @@ function orderedFindings(report: AlignmentReport) {
 }
 
 function describeLocation(finding: AlignmentReport['findings'][number]): string {
-  if (!finding.location) return ''
   const heading = finding.location.heading ? ` (${finding.location.heading})` : ''
-  return `SKILL.md:${finding.location.line}${heading}`
+  return `${finding.location.file}:${finding.location.line}${heading}`
 }
 
 // ---------------------------------------------------------------- text ----
@@ -90,8 +89,7 @@ export function formatReport(
       lines.push(`  [${f.severity.toUpperCase()}] ${f.kind}: ${f.message}`)
       lines.push(`      skill: ${f.skillReference}`)
       if (f.repoReality) lines.push(`      repo:  ${f.repoReality}`)
-      const where = describeLocation(f)
-      if (where) lines.push(`      at:    ${where}`)
+      lines.push(`      at:    ${describeLocation(f)}`)
     }
   }
 
@@ -159,9 +157,8 @@ export function formatAuditMarkdown(
     lines.push(`### ${r.report.skillName}`)
     lines.push('')
     for (const f of orderedFindings(r.report)) {
-      const where = describeLocation(f)
       lines.push(
-        `- **${f.severity}** \`${f.kind}\`${where ? ` at ${where}` : ''}: ${f.message}`,
+        `- **${f.severity}** \`${f.kind}\` at ${describeLocation(f)}: ${f.message}`,
       )
     }
     if (r.suggestions.length > 0) {
@@ -245,7 +242,6 @@ export function formatAuditSarif(
   const sarifResults: unknown[] = []
 
   for (const r of results) {
-    const uri = toUri(path.join(r.skillDir, 'SKILL.md'))
     for (const f of r.report.findings) {
       usedRules.add(f.kind)
       const suggestion = r.suggestions.find(s => s.finding === f)?.suggestion
@@ -256,10 +252,10 @@ export function formatAuditSarif(
         locations: [
           {
             physicalLocation: {
-              artifactLocation: { uri },
-              ...(f.location ? { region: { startLine: f.location.line } } : {}),
+              artifactLocation: { uri: toUri(path.join(r.skillDir, f.location.file)) },
+              region: { startLine: f.location.line },
             },
-            ...(f.location?.heading
+            ...(f.location.heading
               ? { logicalLocations: [{ name: f.location.heading, kind: 'section' }] }
               : {}),
           },

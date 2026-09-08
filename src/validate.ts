@@ -226,7 +226,7 @@ function checkUnknownFields(
         violation(
           'warning',
           'categories-not-in-metadata',
-          `Top-level \`categories\` is not an Agent Skills field and spec validators reject unexpected fields. Move it to \`metadata:\` as \`categories: "${list.join(', ')}"\`; skill-auditor reads both.`,
+          `Top-level \`categories\` is not an Agent Skills field: spec validators reject unexpected fields and skill-auditor no longer reads it, so it counts toward no coverage. Move it to \`metadata:\` as \`categories: "${list.join(', ')}"\`.`,
           'categories',
         ),
       )
