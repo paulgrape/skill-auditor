@@ -57,6 +57,78 @@ describe('compare and --baseline', () => {
     }
   })
 
+  test('audit --baseline attaches the comparison and --fail-on-regression gates on it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-baseline-'))
+    const baseline = path.join(dir, 'baseline.json')
+    try {
+      // A baseline in which the stuffed skill scored like the aligned one, so
+      // auditing it now is a regression.
+      fs.writeFileSync(
+        baseline,
+        JSON.stringify({
+          ...aligned,
+          results: aligned.results.map(r => ({
+            ...r,
+            report: { ...r.report, skillName: stuffed.results[0].report.skillName },
+          })),
+        }),
+      )
+      const payload = parseJson([
+        'audit',
+        './fixtures/stuffed-skill',
+        '--project',
+        FAKE_PROJECT,
+        '--baseline',
+        baseline,
+        '--json',
+      ])
+      assert.equal(payload.comparison.summary.regressed, 1)
+      assert.equal(payload.comparison.skills[0].before.overall, aligned.results[0].score.overall)
+      assert.equal(payload.comparison.skills[0].after.overall, stuffed.results[0].score.overall)
+
+      const { status } = runExpectingFailure([
+        'audit',
+        './fixtures/stuffed-skill',
+        '--project',
+        FAKE_PROJECT,
+        '--baseline',
+        baseline,
+        '--fail-on-regression',
+        '--json',
+      ])
+      assert.equal(status, 1)
+
+      // Against itself nothing regresses. Use the aligned skill so default
+      // `--fail-on critical` does not also fire (stuffed carries criticals).
+      fs.writeFileSync(baseline, JSON.stringify(aligned))
+      const { status: sameStatus } = runExpectingFailure([
+        'audit',
+        './fixtures/aligned-skill',
+        '--project',
+        FAKE_PROJECT,
+        '--baseline',
+        baseline,
+        '--fail-on-regression',
+        '--json',
+      ])
+      assert.equal(sameStatus, 0)
+
+      const { status: missing, stderr } = runExpectingFailure([
+        'audit',
+        './fixtures/aligned-skill',
+        '--project',
+        FAKE_PROJECT,
+        '--baseline',
+        path.join(dir, 'nope.json'),
+        '--json',
+      ])
+      assert.equal(missing, 1)
+      assert.match(stderr, /Cannot read audit payload .*nope\.json/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('--format markdown and sarif emit those formats', () => {
     const { stdout: md } = run([
       'audit',

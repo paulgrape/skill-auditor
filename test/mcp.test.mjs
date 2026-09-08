@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { before, describe, test } from 'node:test'
-import { FAKE_PROJECT, runMcp } from './helpers.mjs'
+import { FAKE_PROJECT, repoRoot, runMcp } from './helpers.mjs'
 
 const MODERN_VERSION = '2026-07-28'
 const LEGACY_VERSION = '2025-06-18'
@@ -237,6 +238,57 @@ describe('mcp server', () => {
       const { structuredContent } = byId(responses, 5).result
       assert.equal(structuredContent.valid, true)
       assert.equal(structuredContent.count, 1)
+    })
+  })
+
+  describe('--confine', () => {
+    let responses
+
+    before(async () => {
+      ;({ responses } = await runMcp(
+        [
+          request(1, 'tools/call', {
+            name: 'audit',
+            arguments: { path: './fixtures/aligned-skill', project: FAKE_PROJECT },
+          }),
+          request(2, 'tools/call', {
+            name: 'audit',
+            arguments: { path: '../outside-skill', project: FAKE_PROJECT },
+          }),
+          request(3, 'tools/call', {
+            name: 'scan',
+            arguments: { project: path.resolve(repoRoot, '..') },
+          }),
+          request(4, 'resources/read', {
+            uri: 'skill-auditor://templates/website-accessibility',
+          }),
+        ],
+        { args: ['--confine'] },
+      ))
+    })
+
+    test('still serves paths inside the working directory', () => {
+      const { isError, structuredContent } = byId(responses, 1).result
+      assert.equal(isError, false)
+      assert.equal(structuredContent.count, 1)
+    })
+
+    test('rejects a relative path that escapes the working directory', () => {
+      const { isError, content } = byId(responses, 2).result
+      assert.equal(isError, true)
+      assert.match(content[0].text, /outside the working directory/)
+      assert.match(content[0].text, /--confine/)
+    })
+
+    test('rejects an absolute path outside the working directory', () => {
+      const { isError, content } = byId(responses, 3).result
+      assert.equal(isError, true)
+      assert.match(content[0].text, /outside the working directory/)
+    })
+
+    test('bundled resources are unaffected', () => {
+      const { contents } = byId(responses, 4).result
+      assert.match(contents[0].text, /name: website-accessibility/)
     })
   })
 

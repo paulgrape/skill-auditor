@@ -38,6 +38,8 @@ Every JSON payload starts with a `schemaVersion` field describing the contract i
 skill-auditor docs
 ```
 
+If your client speaks the Model Context Protocol, the same analysis is available as MCP tools (`audit`, `gaps`, `scan`, `validate`, `extract`, `spec-check`, `docs`, `scaffold`) from a stdio server started with `skill-auditor mcp`; the payloads are identical to the CLI's `--json` output, so every step below applies unchanged.
+
 ## Step 1 — Locate paths
 
 | What | Typical path |
@@ -73,6 +75,8 @@ skill-auditor validate $SKILLS_ROOT --json
 skill-auditor audit $SKILLS_ROOT --project $PROJECT --json
 skill-auditor gaps $SKILLS_ROOT --project $PROJECT --checklist frontend --json
 ```
+
+Save the `audit` payload to a file (call it `$BASELINE`, e.g. `.skill-audit-baseline.json` outside the skills root) before editing anything. Step 5 diffs every later run against it, so you can show the user what actually moved instead of a bare score.
 
 Only when `WEBSITE_SCOPE=yes`, also run the website checklist and static compliance:
 
@@ -258,6 +262,25 @@ are ignored):
 skill-auditor audit $SKILLS_ROOT --project $PROJECT --min-score 70 --json
 ```
 
+Diff the run against the payload saved in Step 2 to report deltas, not just
+the current score. Save this run as `$AFTER` (another JSON file) and either
+pass `--baseline $BASELINE` on `audit` or hand both files to `compare`.
+`comparison.skills[]` gives each skill a `status` (`improved`, `regressed`,
+`unchanged`, `added`, `removed`), a `scoreDelta`, and the findings it
+`resolved` and `introduced`; `--fail-on-regression` turns a regression into
+a non-zero exit for CI:
+
+```bash
+skill-auditor audit $SKILLS_ROOT --project $PROJECT --baseline $BASELINE --json
+skill-auditor audit $SKILLS_ROOT --project $PROJECT --baseline $BASELINE --fail-on-regression --json
+skill-auditor compare $BASELINE $AFTER --json
+skill-auditor compare $BASELINE $AFTER --fail-on-regression --json
+```
+
+A regression means an edit made a skill worse. Look at `introduced` before
+touching anything else: a new `metric-stuffing` or `unverified-api` finding
+usually means the fix chased the number rather than the content.
+
 When `WEBSITE_SCOPE=yes`, also re-check website coverage and compliance:
 
 ```bash
@@ -271,13 +294,14 @@ Repeat Step 3–5 until:
 - Technical skills score ≥ 70 where applicable
 - (website scope only) no unresolved `fail` items in `spec-check` required priority
 
-Report final summary to user:
+Report final summary to user, taking the deltas from `comparison`:
 
 ```
 Scope: technical only | technical + website
 Skills audited: N
 Created: [list new skill dirs]
-Fixed: [list updated skills + score delta]
+Fixed: [list updated skills + score delta + findings resolved]
+Regressed: [list or "none"]
 Remaining gaps: [list or "none"]
 ```
 

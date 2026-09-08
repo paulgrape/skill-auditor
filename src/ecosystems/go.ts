@@ -27,13 +27,18 @@ export interface GoModule {
  * Reduces an import path to the module that most likely provides it. The
  * same heuristic runs on both sides of the audit so a skill's
  * `github.com/gin-gonic/gin/binding` and the repo's `github.com/gin-gonic/gin`
- * land on one name. `localModule` excludes the project's own packages.
+ * land on one name. `localModules` (one path or several, for a repo with
+ * more than one go.mod) excludes the project's own packages.
  */
-export function goPackageName(importPath: string, localModule?: string): string {
+export function goPackageName(
+  importPath: string,
+  localModules?: string | readonly string[],
+): string {
   const segments = importPath.split('/')
   const host = segments[0] ?? ''
   if (!host.includes('.')) return '' // standard library or a bare local path
-  if (localModule && (importPath === localModule || importPath.startsWith(localModule + '/'))) {
+  const locals = typeof localModules === 'string' ? [localModules] : localModules ?? []
+  if (locals.some(local => local && (importPath === local || importPath.startsWith(local + '/')))) {
     return ''
   }
   const depth = THREE_SEGMENT_HOSTS.has(host) ? 3 : 2
@@ -129,6 +134,12 @@ const BLOCK_ENTRY_RE = /(?:([\w.]+)\s+)?"([^"\n]+)"/g
 export interface GoScanOptions {
   /** The project's own module path, whose packages are not dependencies */
   localModule?: string
+  /**
+   * Every module path the project declares. A repo with several go.mod files
+   * (an API at the root, a worker under `services/`) owns all of them, so an
+   * import of any is local, not a dependency.
+   */
+  localModules?: readonly string[]
 }
 
 /**
@@ -142,6 +153,10 @@ export function scanGoImports(
   const normalized = source.replace(/\r\n/g, '\n')
   const text = stripGoComments(normalized)
   const imports: SourceImport[] = []
+  const localModules = [
+    ...(options.localModule ? [options.localModule] : []),
+    ...(options.localModules ?? []),
+  ]
 
   const push = (start: number, end: number, alias: string | undefined, path: string) => {
     const local = alias && alias !== '_' && alias !== '.' ? alias : path.split('/').pop() ?? path
@@ -149,7 +164,7 @@ export function scanGoImports(
     imports.push({
       ecosystem: 'go',
       specifier: path,
-      packageName: goPackageName(path, options.localModule),
+      packageName: goPackageName(path, localModules),
       bindings,
       bindingsKnown: true,
       text: normalized.slice(start, end).trim(),

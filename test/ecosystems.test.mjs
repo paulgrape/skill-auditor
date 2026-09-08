@@ -152,6 +152,15 @@ describe('go', () => {
     assert.equal(goPackageName('golang.org/x/sync/errgroup'), 'golang.org/x/sync')
     assert.equal(goPackageName('gopkg.in/yaml.v3'), 'gopkg.in/yaml.v3')
     assert.equal(goPackageName('example.com/app/internal/x', 'example.com/app'), '')
+    assert.equal(
+      goPackageName('example.com/worker/internal/jobs', ['example.com/api', 'example.com/worker']),
+      '',
+    )
+    // A single local module must not hide a sibling module as a dependency.
+    assert.equal(
+      goPackageName('example.com/worker/internal/jobs', 'example.com/api'),
+      'example.com/worker',
+    )
   })
 
   test('reads go.mod: module path, direct requires, normalized major versions', () => {

@@ -10,11 +10,12 @@ export const cliPath = path.join(repoRoot, 'dist/cli.js')
  * set — and even then stderr is preserved on the result, because a swallowed
  * stderr turns a crash into a confusing JSON parse error downstream.
  */
-export function run(args, { allowFail = false, cwd = repoRoot } = {}) {
+export function run(args, { allowFail = false, cwd = repoRoot, env = {} } = {}) {
   try {
     const stdout = execFileSync(process.execPath, [cliPath, ...args], {
       encoding: 'utf-8',
       cwd: path.resolve(repoRoot, cwd),
+      env: { ...process.env, ...env },
     })
     return { stdout, stderr: '', status: 0 }
   } catch (err) {
@@ -51,11 +52,12 @@ export function parseJson(args, options = {}) {
 /**
  * Drives the MCP server over a real stdio pipe: writes each message as a
  * line, closes stdin and returns every JSON-RPC message it wrote back.
- * Strings are written verbatim, so a test can send malformed input.
+ * Strings are written verbatim, so a test can send malformed input. `args`
+ * are extra CLI flags for the `mcp` command (`--confine`).
  */
-export function runMcp(messages, { cwd = repoRoot } = {}) {
+export function runMcp(messages, { cwd = repoRoot, args = [] } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, 'mcp'], {
+    const child = spawn(process.execPath, [cliPath, 'mcp', ...args], {
       cwd: path.resolve(repoRoot, cwd),
     })
     let stdout = ''

@@ -24,7 +24,9 @@ export interface SourceImport {
   bindings: ImportBinding[]
   /**
    * Whether the bindings can be checked for use. `require()` and dynamic
-   * `import()` results are not tracked, so they are at most "fenced" evidence.
+   * `import()` results are not tracked, and a re-export (`export { a } from`)
+   * has no body that could use what it forwards, so those are at most
+   * "fenced" evidence. Their bindings still feed the repo's usedIdentifiers.
    */
   bindingsKnown: boolean
   /** Statement text as written */

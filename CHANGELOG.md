@@ -3,6 +3,43 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 2.0.1
+
+Correctness leftovers from the polyglot scan: sibling Go modules are no
+longer treated as dependencies, barrel `export * as` records its binding,
+and a bad `package.json#skill-auditor` key fails instead of being ignored.
+`schemaVersion` stays **2**.
+
+### Fixed
+
+- **Go multi-module repos.** Every `go.mod` under the project is treated as
+  local. A worker module's packages are no longer reported as dependencies of
+  the API module (the scan used only the first `goModules` entry).
+- **`export * as ns from 'pkg'`.** The namespace binding is recorded, so a
+  barrel file that re-exports a package contributes to `usedIdentifiers` the
+  same way `import * as ns` already did.
+
+### Changed
+
+- **`unscorable`.** The dead "nothing to align" branch is gone. Every import
+  specifier records a package, so that shape cannot occur through the
+  extractor; an unknown package is always `unused-reference` (or
+  `missing-dependency` / `category-conflict`). The finding kind stays as a
+  documented guard when a low score has no other finding.
+- **`package.json#skill-auditor` validation.** A malformed `"skill-auditor"`
+  key now fails the same way as a bad `.skill-auditor.json`. The parse catch
+  used to swallow `coerce` errors and silently ignore the config.
+
+### Added
+
+- Fixtures and tests for Go multi-module, Cargo workspaces, Python
+  `requirements.txt` `-r` includes (currently dropped, not followed), a skill
+  with `references/`, `audit --baseline`, cache hit/invalidation, MCP
+  `--confine`, `.skill-auditor.json` ignore globs, `package.json#skill-auditor`,
+  and `scaffold --name` / `--force`.
+- The bundled skill documents the `compare` / `--baseline --fail-on-regression`
+  loop.
+
 ## 2.0.0
 
 Ground truth for polyglot projects, a dependency-free JS/TS parser, and a
@@ -29,7 +66,7 @@ what a schema-1 consumer has to change.
   side-effect imports, `require()` and dynamic `import()`, and records the
   same bindings ts-morph did. **`--parser ts-morph`** (or
   `SKILL_AUDITOR_PARSER=ts-morph`) opts back into the TypeScript compiler;
-  ts-morph is now an *optional peer dependency*. A parity test runs both over
+  ts-morph is now an _optional peer dependency_. A parity test runs both over
   the fixtures. The cache fingerprint includes the parser.
 - **Skill fences in `python`, `go` and `rust`** are read with the same
   scanners as the project, so a Gin or Serde example is a real package
