@@ -53,6 +53,9 @@ describe('audit', () => {
     assert.ok(stuffed.report.findings.some(f => f.kind === 'metric-stuffing'))
     assert.ok(stuffed.score.overall <= 60)
     assert.ok(stuffed.score.overall < aligned.score.overall)
+    assert.ok(
+      stuffed.report.findings.some(f => f.location && f.location.line >= 1),
+    )
   })
 
   test('reports neutral skills on intrinsic quality only', () => {

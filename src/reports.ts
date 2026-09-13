@@ -1,9 +1,10 @@
+import { describeConfig, prepareProject } from './config.js'
 import { buildAlignmentReport } from './diff.js'
 import { findSkillDirs } from './discoverSkills.js'
 import { envelope } from './envelope.js'
 import { detectGaps } from './gaps.js'
-import { buildRepoReality } from './repoReality.js'
-import { scoreSkill } from './score.js'
+import { buildRepoReality, type BuildRepoRealityOptions } from './repoReality.js'
+import { explainLowScore, scoreSkill } from './score.js'
 import { extractSkillIdentifiers } from './skillIdentifiers.js'
 import { buildSuggestions } from './suggestions.js'
 import type {
@@ -32,6 +33,8 @@ export function auditSkill(repo: RepoReality, skillDir: string): AuditResult {
   const skill = extractSkillIdentifiers(skillDir)
   const report = buildAlignmentReport(skill, repo)
   const score = scoreSkill(report, skill, repo)
+  const explanation = explainLowScore(report, score, skill)
+  if (explanation) report.findings.push(explanation)
   const suggestions = buildSuggestions(report.findings)
   return { skillDir, report, score, suggestions }
 }
@@ -75,8 +78,15 @@ export function auditSkillsSafely(
  * the CLI, the MCP server and library consumers all emit the same shapes.
  */
 
-export function scanReport(projectRoot: string) {
-  return envelope(buildRepoReality(projectRoot))
+export function scanReport(
+  projectRoot: string,
+  options: BuildRepoRealityOptions = {},
+) {
+  const loaded = prepareProject(projectRoot)
+  return envelope({
+    ...buildRepoReality(projectRoot, options),
+    config: describeConfig(loaded),
+  })
 }
 
 /**
@@ -84,19 +94,33 @@ export function scanReport(projectRoot: string) {
  * branch. `count` is the number of skills actually scored; `errors` lists the
  * skill directories that could not be audited and is empty on a clean run.
  */
-export function auditReport(results: AuditResult[], errors: AuditError[] = []) {
-  return envelope({ count: results.length, results, errors })
+export function auditReport(
+  results: AuditResult[],
+  errors: AuditError[] = [],
+  extras: Record<string, unknown> = {},
+) {
+  return envelope({ count: results.length, results, errors, ...extras })
 }
 
 export function gapsReport(
   skillRoots: string[],
   projectRoot: string,
   checklistKey?: string,
+  options: BuildRepoRealityOptions = {},
 ) {
-  const repo = buildRepoReality(projectRoot)
+  prepareProject(projectRoot)
+  const repo = buildRepoReality(projectRoot, options)
   const skillDirs = findSkillDirs(skillRoots)
   return envelope({
     skillDirs,
     ...detectGaps(repo, skillRoots, checklistKey),
+  })
+}
+
+export function validateReport(results: import('./types.js').SkillValidation[]) {
+  return envelope({
+    count: results.length,
+    valid: results.every(r => r.valid),
+    results,
   })
 }

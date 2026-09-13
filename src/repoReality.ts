@@ -1,11 +1,31 @@
 import fg from 'fast-glob'
 import * as fs from 'fs'
+import { createRequire } from 'module'
 import * as path from 'path'
-import { Project, SyntaxKind } from 'ts-morph'
+import {
+  cacheDisabledByEnv,
+  fingerprintProject,
+  readCachedReality,
+  writeCachedReality,
+} from './cache.js'
 import { frontmatterList, parseSimpleYaml } from './frontmatter.js'
 import { DEFAULT_IGNORE } from './ignore.js'
 import { topLevelPackage } from './packageNames.js'
 import type { ImportEvidence, RepoReality } from './types.js'
+
+/**
+ * ts-morph (and the TypeScript compiler underneath) is by far the heaviest
+ * module in the tree and takes most of the startup time. It is loaded on
+ * first use so a cache hit never pays for it.
+ */
+type TsMorph = typeof import('ts-morph')
+let tsMorph: TsMorph | undefined
+function loadTsMorph(): TsMorph {
+  if (!tsMorph) {
+    tsMorph = createRequire(import.meta.url)('ts-morph') as TsMorph
+  }
+  return tsMorph
+}
 
 /** Max evidence entries kept per package to avoid noisy output. */
 const MAX_EVIDENCE_PER_PACKAGE = 5
@@ -122,6 +142,7 @@ function scanImportUsage(projectRoot: string): ImportScanResult {
     absolute: true,
   })
 
+  const { Project, SyntaxKind } = loadTsMorph()
   const project = new Project({
     useInMemoryFileSystem: false,
     skipAddingFilesFromTsConfig: true,
@@ -205,7 +226,12 @@ function scanImportUsage(projectRoot: string): ImportScanResult {
   return { usedImports, usedIdentifiers, importEvidence }
 }
 
-export function buildRepoReality(projectRoot: string): RepoReality {
+export interface BuildRepoRealityOptions {
+  /** Use the fingerprinted cache (default true; SKILL_AUDITOR_NO_CACHE=1 also disables it) */
+  cache?: boolean
+}
+
+function scanRepoReality(projectRoot: string): RepoReality {
   const { usedImports, usedIdentifiers, importEvidence } =
     scanImportUsage(projectRoot)
   return {
@@ -214,4 +240,24 @@ export function buildRepoReality(projectRoot: string): RepoReality {
     usedIdentifiers,
     importEvidence,
   }
+}
+
+/**
+ * The project's ground truth. Served from the cache when nothing the scan
+ * reads has changed since the last run (see cache.ts), otherwise rebuilt.
+ */
+export function buildRepoReality(
+  projectRoot: string,
+  options: BuildRepoRealityOptions = {},
+): RepoReality {
+  const useCache = options.cache !== false && !cacheDisabledByEnv()
+  if (!useCache) return scanRepoReality(projectRoot)
+
+  const fingerprint = fingerprintProject(projectRoot)
+  const cached = readCachedReality(projectRoot, fingerprint)
+  if (cached) return cached
+
+  const reality = scanRepoReality(projectRoot)
+  writeCachedReality(projectRoot, fingerprint, reality)
+  return reality
 }

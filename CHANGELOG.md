@@ -3,6 +3,56 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.4.0
+
+Agent-facing additions: spec lint, deterministic gap scaffolding, finding
+locations, a procedural skill kind, cached scans, project taxonomy config,
+and extra MCP surface. `schemaVersion` stays at 1; new JSON fields are
+additive.
+
+### Added
+
+- **`validate`** — lints `SKILL.md` against the Agent Skills spec (name
+  format and directory match, description, unknown frontmatter fields,
+  `metadata` value types, body length). Errors fail the command; warnings
+  and info do not.
+- **`scaffold <category>`** — writes a SKILL.md from the project's import
+  evidence. `--dry-run` prints without writing. Categories go under
+  `metadata.categories`, which the spec allows.
+- **`compare <before> <after>`** and **`audit --baseline <file>`** — score
+  and finding deltas between two `audit --json` payloads. `--fail-on-regression`
+  is a CI gate.
+- **`--format markdown|sarif`** on `audit` / `audit-all` (and `--json` still
+  works). SARIF annotations land on the SKILL.md line a finding points at.
+- **Finding `location: { line, heading }`** so an agent can edit the section
+  that produced the finding.
+- **`procedural` skill kind** — shell-workflow skills (bash fences, inline
+  mentions, no JS/Python examples) are no longer alignment-scored.
+- **`unscorable` info finding** when a scored skill is below 70 with no
+  other findings, so the agent always has something to act on.
+- **RepoReality cache** keyed on a fingerprint of every file the scan would
+  read. Stored under `node_modules/.cache/skill-auditor/` or the OS temp
+  dir; `--no-cache` or `SKILL_AUDITOR_NO_CACHE=1` bypasses it. The MCP
+  server keeps an in-process copy per project.
+- **`.skill-auditor.json`** (or a `"skill-auditor"` key in package.json) to
+  extend taxonomy categories, checklists and ignore globs. Scoring
+  thresholds are not configurable. Applied config is reported on `scan`.
+- **MCP** tools `validate`, `extract`, `spec-check`, `docs`, `scaffold`;
+  resources for `templates/*` and the bundled skill; an `audit-and-fix`
+  prompt. `skill-auditor mcp --confine` rejects paths outside cwd.
+- Taxonomy coverage for Vue/Svelte/Astro/Remix packages and extra
+  deprecated-API rules (React Router v5/v7, `react-query` →
+  `@tanstack/react-query`, redux `createStore` vs Toolkit). Tables live in
+  `taxonomyData.ts` and `docs` prints them.
+
+### Changed
+
+- Website-domain coverage is declared as `metadata.categories: accessibility`
+  (a string). A top-level `categories:` list is still read, and `validate`
+  warns to move it. Bundled `templates/website-*` have been migrated.
+- `scan --json` includes a `config` object. `extract --json` includes
+  `locations` and `codeEvidence`. `docs` includes `taxonomy` and `config`.
+
 ## 1.3.1
 
 Correctness fixes for what the extractor reads out of a skill, plus the CLI

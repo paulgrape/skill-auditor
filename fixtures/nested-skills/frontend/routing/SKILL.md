@@ -1,5 +1,5 @@
 ---
-name: nested-routing
+name: routing
 description: Nested skill fixture for routing.
 ---
 

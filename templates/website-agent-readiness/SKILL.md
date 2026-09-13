@@ -1,9 +1,8 @@
 ---
 name: website-agent-readiness
 description: Agent- and crawler-readiness for a website — stable URLs, structured data for agents, machine-readable formats, llms.txt, per-page Markdown endpoints, robots controls for AI crawlers, and well-known URIs. Use when making a site legible to AI agents and LLMs, or publishing machine-readable endpoints.
-categories:
-  - agent-readiness
-  - well-known
+metadata:
+  categories: agent-readiness
 ---
 
 # Website agent readiness

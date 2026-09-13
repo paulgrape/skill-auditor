@@ -5,6 +5,7 @@ import { frontmatterString, parseFrontmatter } from './frontmatter.js'
 import {
   categoriesForPackage,
   FRESHNESS_PENALTY,
+  LOW_SCORE_THRESHOLD,
   MIXED_SKILL_THRESHOLD,
   SCORE_WEIGHTS,
   SPECIFICITY_SATURATION,
@@ -15,6 +16,7 @@ import {
 } from './taxonomy.js'
 import type {
   AlignmentReport,
+  DriftFinding,
   RepoReality,
   ScoreBreakdown,
   SkillIdentifiers,
@@ -28,9 +30,22 @@ function totalTechRefs(skill: SkillIdentifiers): number {
   )
 }
 
+/**
+ * A skill's kind decides whether alignment is scored at all.
+ *
+ * Procedural skills teach a command-line workflow: their fenced code is shell
+ * and their technical references are inline mentions of tools or packages.
+ * Grading them on package alignment produced F scores for skills that were
+ * doing their job, so they get findings (a mentioned rival library is still
+ * worth flagging) but no alignment score, like neutral skills.
+ */
 export function classifySkillKind(skill: SkillIdentifiers): SkillKind {
   const refs = totalTechRefs(skill)
   if (refs === 0) return 'neutral'
+  const evidence = skill.codeEvidence
+  if (evidence && evidence.codeFences === 0 && evidence.shellFences > 0) {
+    return 'procedural'
+  }
   if (refs <= MIXED_SKILL_THRESHOLD) return 'mixed'
   return 'technical'
 }
@@ -133,7 +148,7 @@ export function scoreSkill(
   const intrinsicGrade = toGrade(intrinsicQuality)
   const freshness = computeFreshness(report)
 
-  if (kind === 'neutral') {
+  if (kind === 'neutral' || kind === 'procedural') {
     return {
       kind,
       overall: null,
@@ -179,5 +194,55 @@ export function scoreSkill(
     breakdown,
     intrinsicQuality,
     intrinsicGrade,
+  }
+}
+
+/**
+ * A scored skill below the threshold must never come back with an empty
+ * findings list: the findings and suggestions are the only interface an
+ * agent is meant to act on. When the dimensions alone dragged the score down,
+ * this names the dimension and what would move it.
+ */
+export function explainLowScore(
+  report: AlignmentReport,
+  score: SkillScore,
+  skill: SkillIdentifiers,
+): DriftFinding | null {
+  if (score.overall === null) return null
+  if (score.overall >= LOW_SCORE_THRESHOLD) return null
+  if (report.findings.length > 0) return null
+
+  const sample = (values: Iterable<string>, max = 5) => {
+    const list = [...values].sort()
+    return list.length > max
+      ? `${list.slice(0, max).join(', ')}, …`
+      : list.join(', ')
+  }
+
+  if (report.scorableReferenceCount === 0) {
+    const refs = sample([...skill.importSpecifiers, ...skill.apiCalls])
+    return {
+      severity: 'info',
+      kind: 'unscorable',
+      message: `Score ${score.overall}/100 with nothing to align: none of the skill's references (${refs || 'none extracted'}) names a package the project declares or one the taxonomy knows, so alignment is unknown (${Math.round(
+        (score.breakdown.alignment ?? 0) * 100,
+      )}% prior) and specificity is 0%. Either demonstrate the project's real packages with working examples, or accept this as a package-agnostic skill.`,
+      skillReference: refs || '(no package references)',
+    }
+  }
+
+  const specificity = score.breakdown.specificity ?? 0
+  const matched = Object.values(skill.packageRefs).map(
+    ref => `${ref.packageName} (${ref.substantiation})`,
+  )
+  return {
+    severity: 'info',
+    kind: 'unscorable',
+    message: `Score ${score.overall}/100 without a drift finding: alignment ${Math.round(
+      (score.breakdown.alignment ?? 0) * 100,
+    )}%, specificity ${Math.round(specificity * 100)}%, focus ${Math.round(
+      (score.breakdown.focus ?? 0) * 100,
+    )}%. The matched references (${sample(matched)}) are not demonstrated in working code that uses what it imports, so they earn little specificity.`,
+    skillReference: sample(Object.keys(skill.packageRefs)),
   }
 }

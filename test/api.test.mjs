@@ -13,7 +13,10 @@ import {
   findSkillDirs,
   requireChecklist,
   SCHEMA_VERSION,
+  scaffoldSkill,
   scoreSkill,
+  validateSkill,
+  validateReport,
 } from '../dist/index.js'
 import { FAKE_PROJECT, repoRoot } from './helpers.mjs'
 
@@ -94,5 +97,22 @@ describe('programmatic api', () => {
       () => detectGaps(buildRepoReality(project), [], 'nope'),
       /Unknown checklist/,
     )
+  })
+
+  test('validates and scaffolds without going through the CLI', () => {
+    const aligned = path.join(repoRoot, 'fixtures/aligned-skill')
+    const validation = validateSkill(aligned)
+    assert.equal(validation.valid, true)
+    const payload = validateReport([validation])
+    assert.equal(payload.valid, true)
+
+    const drafted = scaffoldSkill({
+      category: 'routing',
+      repo: buildRepoReality(project),
+      outDir: path.join(repoRoot, 'fixtures'),
+      dryRun: true,
+    })
+    assert.equal(drafted.written, false)
+    assert.match(drafted.contents, /next\/navigation/)
   })
 })

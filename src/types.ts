@@ -33,6 +33,14 @@ export interface RepoReality {
  */
 export type ReferenceSubstantiation = 'usage' | 'fenced' | 'mention'
 
+/** Where in SKILL.md something was found, so an agent can edit the exact section. */
+export interface SourceLocation {
+  /** 1-based line in SKILL.md (the fence opener or the line holding the inline span) */
+  line: number
+  /** Text of the nearest heading above, without `#` markers */
+  heading?: string
+}
+
 /** Per-package substantiation record for a skill reference. */
 export interface PackageReference {
   packageName: string
@@ -40,6 +48,23 @@ export interface PackageReference {
   substantiation: ReferenceSubstantiation
   /** True when at least one section referencing this package carries enough explanatory prose */
   substantiatedByProse: boolean
+  /** First place the package is referenced in SKILL.md, when it was found there */
+  location?: SourceLocation
+}
+
+/** First occurrence of each extracted reference in SKILL.md. */
+export interface SkillLocations {
+  packages: Record<string, SourceLocation>
+  importSpecifiers: Record<string, SourceLocation>
+  apiCalls: Record<string, SourceLocation>
+}
+
+/** What kinds of code the skill's fenced blocks contained. */
+export interface CodeEvidence {
+  /** JS/TS or Python fences that yielded at least one reference */
+  codeFences: number
+  /** Shell-family fences (bash, sh, shell, zsh, powershell, console) */
+  shellFences: number
 }
 
 /**
@@ -62,22 +87,31 @@ export interface SkillIdentifiers {
   importedIdentifiers: Record<string, Set<string>>
   /** Import statements across all snippets whose bindings are never used below them */
   unusedImportCount: number
+  /** Where each reference was first seen in SKILL.md */
+  locations: SkillLocations
+  /** Which kinds of fenced code the skill contains */
+  codeEvidence: CodeEvidence
 }
 
 export type DriftSeverity = 'info' | 'warning' | 'critical'
 
+export type DriftFindingKind =
+  | 'missing-dependency'
+  | 'category-conflict'
+  | 'deprecated-api'
+  | 'unused-reference'
+  | 'unverified-api'
+  | 'metric-stuffing'
+  | 'unscorable'
+
 export interface DriftFinding {
   severity: DriftSeverity
-  kind:
-    | 'missing-dependency'
-    | 'category-conflict'
-    | 'deprecated-api'
-    | 'unused-reference'
-    | 'unverified-api'
-    | 'metric-stuffing'
+  kind: DriftFindingKind
   message: string
   skillReference: string
   repoReality?: string
+  /** Where in SKILL.md the finding points, when it concerns one place */
+  location?: SourceLocation
 }
 
 export interface AlignmentReport {
@@ -94,7 +128,14 @@ export interface AlignmentReport {
   findings: DriftFinding[]
 }
 
-export type SkillKind = 'technical' | 'mixed' | 'neutral'
+/**
+ * - technical: package-backed, fully alignment-scored
+ * - mixed: a few technical references, alignment-scored
+ * - procedural: a command-line workflow (shell fences, inline mentions, no
+ *   JS/Python examples) — findings are reported, alignment is not scored
+ * - neutral: no technical references at all; intrinsic quality only
+ */
+export type SkillKind = 'technical' | 'mixed' | 'procedural' | 'neutral'
 
 export interface ScoreBreakdown {
   alignment: number | null
@@ -166,4 +207,24 @@ export interface ComplianceFinding {
 export interface ComplianceReport {
   summary: { pass: number; fail: number; skip: number }
   findings: ComplianceFinding[]
+}
+
+export type ValidationSeverity = 'error' | 'warning' | 'info'
+
+/** One Agent Skills spec rule a SKILL.md breaks or bends. */
+export interface ValidationViolation {
+  severity: ValidationSeverity
+  /** Stable rule id, e.g. 'name-matches-directory' */
+  rule: string
+  message: string
+  /** Frontmatter field the rule concerns, when it concerns one */
+  field?: string
+}
+
+export interface SkillValidation {
+  skillDir: string
+  skillName: string
+  /** False when any violation is an error */
+  valid: boolean
+  violations: ValidationViolation[]
 }

@@ -1,5 +1,5 @@
 ---
-name: neutral-style
+name: neutral-skill
 description: A tone and communication style skill with no technical references.
 ---
 

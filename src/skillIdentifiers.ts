@@ -2,7 +2,7 @@ import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
 import {
-  frontmatterList,
+  declaredCategories,
   frontmatterString,
   parseFrontmatter,
 } from './frontmatter.js'
@@ -13,6 +13,7 @@ import type {
   PackageReference,
   ReferenceSubstantiation,
   SkillIdentifiers,
+  SourceLocation,
 } from './types.js'
 
 /** Matches fenced code blocks, capturing the info-string language and body. */
@@ -265,59 +266,108 @@ function analyzeJavaScript(code: string): CodeAnalysis {
   return result
 }
 
+const SHELL_FENCE_TAGS = new Set([
+  'bash',
+  'sh',
+  'shell',
+  'zsh',
+  'fish',
+  'powershell',
+  'pwsh',
+  'console',
+  'terminal',
+  'cmd',
+  'bat',
+])
+
 interface FencedBlock {
   language: FenceLanguage
+  /** Raw info-string tag, lower-cased */
+  tag: string
   code: string
+  /** 1-based line of the opening fence in the document */
+  line: number
+}
+
+interface InlineSpan {
+  text: string
+  /** 1-based line the span sits on in the document */
+  line: number
 }
 
 interface MarkdownSection {
+  /** Nearest heading text, without `#` markers, when the section has one */
+  heading?: string
   /** Words of prose in the section (code stripped) */
   proseWords: number
   fencedBlocks: FencedBlock[]
-  inlineSpans: string[]
+  inlineSpans: InlineSpan[]
+}
+
+function countNewlines(text: string): number {
+  let count = 0
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') count++
+  return count
 }
 
 /**
  * Splits a markdown body into heading-delimited sections so references can be
- * judged against the prose that actually explains them.
+ * judged against the prose that actually explains them, keeping the document
+ * line of every fence and inline span so findings can point at them.
  */
-function splitSections(body: string): MarkdownSection[] {
+function splitSections(body: string, firstLine: number): MarkdownSection[] {
   const lines = body.split('\n')
-  const chunks: string[][] = []
+  const chunks: { lines: string[]; startLine: number }[] = []
   let current: string[] = []
-  for (const line of lines) {
+  let currentStart = firstLine
+  lines.forEach((line, index) => {
     if (/^#{1,6}\s/.test(line) && current.length > 0) {
-      chunks.push(current)
+      chunks.push({ lines: current, startLine: currentStart })
       current = []
+      currentStart = firstLine + index
     }
     current.push(line)
-  }
-  if (current.length > 0) chunks.push(current)
+  })
+  if (current.length > 0) chunks.push({ lines: current, startLine: currentStart })
 
-  return chunks.map(chunk => {
-    const text = chunk.join('\n')
+  return chunks.map(({ lines: chunkLines, startLine }) => {
+    const text = chunkLines.join('\n')
+    const headingMatch = chunkLines[0]?.match(/^#{1,6}\s+(.+?)\s*#*\s*$/)
+    const heading = headingMatch?.[1]
+
     const fencedBlocks: FencedBlock[] = []
+    // Fences are replaced by an equal number of newlines so later offsets
+    // still map to document lines.
     const withoutFences = text.replace(
       FENCED_BLOCK_RE,
-      (_m, tag: string, code: string) => {
-        fencedBlocks.push({ language: classifyFence(tag), code })
-        return ' '
+      (m: string, tag: string, code: string, offset: number) => {
+        fencedBlocks.push({
+          language: classifyFence(tag),
+          tag: tag.toLowerCase(),
+          code,
+          line: startLine + countNewlines(text.slice(0, offset)),
+        })
+        return '\n'.repeat(countNewlines(m))
       },
     )
     // Markdown table rows are catalogs/enumerations (e.g. "common packages"
     // reference tables), not teaching content — inline code inside them must
     // not count as package references, or list-style skills get flagged as
-    // stuffing and stuffers get free references.
+    // stuffing and stuffers get free references. Rows are blanked, not
+    // removed, to keep line numbers stable.
     const withoutTables = withoutFences
       .split('\n')
-      .filter(line => !/^\s*\|.*\|\s*$/.test(line))
+      .map(line => (/^\s*\|.*\|\s*$/.test(line) ? '' : line))
       .join('\n')
 
-    const inlineSpans: string[] = []
+    const inlineSpans: InlineSpan[] = []
     const prosePart = withoutTables.replace(
       INLINE_CODE_RE,
-      (_m, span: string) => {
-        inlineSpans.push(span)
+      (_m: string, span: string, offset: number) => {
+        inlineSpans.push({
+          text: span,
+          line: startLine + countNewlines(withoutTables.slice(0, offset)),
+        })
         return ' '
       },
     )
@@ -325,7 +375,9 @@ function splitSections(body: string): MarkdownSection[] {
     const prose = prosePart.replace(/^#{1,6}\s+/gm, '')
     const proseWords = prose.split(/\s+/).filter(w => /\w/.test(w)).length
 
-    return { proseWords, fencedBlocks, inlineSpans }
+    return heading
+      ? { heading, proseWords, fencedBlocks, inlineSpans }
+      : { proseWords, fencedBlocks, inlineSpans }
   })
 }
 
@@ -342,32 +394,39 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
   }
   // Normalize CRLF so fence/line-anchored regexes behave the same on Windows.
   const raw = fs.readFileSync(skillMdPath, 'utf-8').replace(/\r\n/g, '\n')
-  const { data: frontmatter, body } = parseFrontmatter(raw)
+  const { data: frontmatter, body, bodyStartLine } = parseFrontmatter(raw)
 
   const result: SkillIdentifiers = {
     skillName: frontmatterString(frontmatter, 'name') ?? path.basename(skillDir),
     skillPath: skillDir,
-    categories: new Set(frontmatterList(frontmatter, 'categories')),
+    categories: new Set(declaredCategories(frontmatter)),
     packages: new Set(),
     importSpecifiers: new Set(),
     apiCalls: new Set(),
     packageRefs: {},
     importedIdentifiers: {},
     unusedImportCount: 0,
+    locations: { packages: {}, importSpecifiers: {}, apiCalls: {} },
+    codeEvidence: { codeFences: 0, shellFences: 0 },
   }
 
   const recordRef = (
     pkg: string,
     tier: ReferenceSubstantiation,
     proseOk: boolean,
+    location?: SourceLocation,
   ) => {
     result.packages.add(pkg)
+    if (location && !result.locations.packages[pkg]) {
+      result.locations.packages[pkg] = location
+    }
     const existing = result.packageRefs[pkg]
     if (!existing) {
       result.packageRefs[pkg] = {
         packageName: pkg,
         substantiation: tier,
         substantiatedByProse: proseOk,
+        ...(location ? { location } : {}),
       } satisfies PackageReference
       return
     }
@@ -379,31 +438,64 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     existing.substantiatedByProse = existing.substantiatedByProse || proseOk
   }
 
-  const mergeAnalysis = (analysis: CodeAnalysis, proseOk: boolean) => {
-    for (const [pkg, tier] of analysis.packages) recordRef(pkg, tier, proseOk)
+  /** Folds one snippet's analysis in. `location` is undefined for bundled files. */
+  const mergeAnalysis = (
+    analysis: CodeAnalysis,
+    proseOk: boolean,
+    location?: SourceLocation,
+  ) => {
+    for (const [pkg, tier] of analysis.packages) {
+      recordRef(pkg, tier, proseOk, location)
+    }
     for (const [pkg, ids] of analysis.importedIdentifiers) {
       const target = result.importedIdentifiers[pkg] ?? new Set<string>()
       for (const id of ids) target.add(id)
       result.importedIdentifiers[pkg] = target
     }
-    for (const spec of analysis.importSpecifiers)
+    for (const spec of analysis.importSpecifiers) {
       result.importSpecifiers.add(spec)
-    for (const call of analysis.apiCalls) result.apiCalls.add(call)
+      if (location && !result.locations.importSpecifiers[spec]) {
+        result.locations.importSpecifiers[spec] = location
+      }
+    }
+    for (const call of analysis.apiCalls) {
+      result.apiCalls.add(call)
+      if (location && !result.locations.apiCalls[call]) {
+        result.locations.apiCalls[call] = location
+      }
+    }
     result.unusedImportCount += analysis.unusedImportCount
   }
 
-  const mergeMarkdown = (markdown: string) => {
-    for (const section of splitSections(markdown)) {
+  const yieldedReferences = (analysis: CodeAnalysis) =>
+    analysis.packages.size > 0 ||
+    analysis.importSpecifiers.size > 0 ||
+    analysis.apiCalls.size > 0
+
+  /** `locate` is false for bundled reference files, whose lines are not SKILL.md's. */
+  const mergeMarkdown = (markdown: string, firstLine: number, locate: boolean) => {
+    for (const section of splitSections(markdown, firstLine)) {
       const proseOk = section.proseWords >= PROSE_MIN_WORDS
+      const at = (line: number): SourceLocation | undefined =>
+        locate
+          ? section.heading
+            ? { line, heading: section.heading }
+            : { line }
+          : undefined
 
       for (const block of section.fencedBlocks) {
-        mergeAnalysis(analyzeCode(block.code, block.language), proseOk)
+        if (SHELL_FENCE_TAGS.has(block.tag)) result.codeEvidence.shellFences++
+        const analysis = analyzeCode(block.code, block.language)
+        if (block.language !== 'other' && yieldedReferences(analysis)) {
+          result.codeEvidence.codeFences++
+        }
+        mergeAnalysis(analysis, proseOk, at(block.line))
       }
 
       // Inline code spans: imports/requires still count as code, but a
       // package name that only ever appears inline is a bare mention.
       for (const span of section.inlineSpans) {
-        const analysis = analyzeCode(span, 'untagged')
+        const analysis = analyzeCode(span.text, 'untagged')
         // Downgrade anything found in an inline span to 'mention' — a
         // one-line span is never a demonstrated usage.
         const downgraded: CodeAnalysis = {
@@ -413,20 +505,20 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
           ),
           unusedImportCount: 0,
         }
-        mergeAnalysis(downgraded, proseOk)
+        mergeAnalysis(downgraded, proseOk, at(span.line))
 
         // Bare package-name mentions (`tailwindcss`, `@tanstack/react-query`):
         // count them as mention-tier references when they are unambiguous —
         // taxonomy-known names or scoped package names.
-        const trimmed = span.trim()
+        const trimmed = span.text.trim()
         const isScoped = /^@[\w.-]+\/[\w.-]+$/.test(trimmed)
         if (isScoped || isKnownPackage(trimmed))
-          recordRef(trimmed, 'mention', proseOk)
+          recordRef(trimmed, 'mention', proseOk, at(span.line))
       }
     }
   }
 
-  mergeMarkdown(body)
+  mergeMarkdown(body, bodyStartLine, true)
 
   // Bundled scripts/references: the file extension plays the role of the
   // fence tag. Markdown references go through the same section-aware pass as
@@ -443,7 +535,7 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     if (language === 'other' && !isMarkdown) continue
     try {
       const text = fs.readFileSync(file, 'utf-8').replace(/\r\n/g, '\n')
-      if (isMarkdown) mergeMarkdown(parseFrontmatter(text).body)
+      if (isMarkdown) mergeMarkdown(parseFrontmatter(text).body, 1, false)
       else mergeAnalysis(analyzeCode(text, language), true)
     } catch {
       // binary/unreadable asset, skip

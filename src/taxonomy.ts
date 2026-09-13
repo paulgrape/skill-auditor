@@ -1,86 +1,78 @@
+import {
+  BASE_CATEGORY_TAXONOMY,
+  BASE_MUST_HAVE_CHECKLISTS,
+  DEPRECATED_API_RULES,
+  type DeprecatedApiRule,
+} from './taxonomyData.js'
+
+export { DEPRECATED_API_RULES, type DeprecatedApiRule }
+
 /**
- * Groups packages that solve the same problem, so we can detect
- * "skill assumes Redux, project uses Zustand" — a real conflict with
- * zero string overlap, which substring matching can never catch.
- *
- * This table is intentionally small and hand-curated to start. It's meant
- * to grow via PRs, not to be exhaustive on day one.
+ * The live taxonomy tables. They start as copies of the curated data and can
+ * be extended in place by a project's `.skill-auditor.json` (see
+ * configureTaxonomy). Mutated in place, never reassigned, so every module
+ * holding a reference sees the same tables.
  */
-export const CATEGORY_TAXONOMY: Record<string, string[]> = {
-  state: [
-    'zustand',
-    'redux',
-    '@reduxjs/toolkit',
-    'jotai',
-    'recoil',
-    'mobx',
-    'valtio',
-  ],
-  routing: [
-    'next',
-    'react-router',
-    'react-router-dom',
-    '@tanstack/router',
-    '@tanstack/react-router',
-    'wouter',
-  ],
-  'data-fetching': [
-    'swr',
-    '@tanstack/react-query',
-    '@tanstack/query',
-    '@reduxjs/toolkit',
-    'apollo-client',
-    '@apollo/client',
-    'urql',
-  ],
-  forms: ['react-hook-form', 'formik', 'final-form', '@tanstack/react-form'],
-  validation: ['zod', 'yup', 'joi', 'superstruct', 'valibot'],
-  styling: [
-    'tailwindcss',
-    'styled-components',
-    '@emotion/react',
-    '@emotion/styled',
-    'sass',
-    'vanilla-extract',
-  ],
-  'orm-db': [
-    'drizzle-orm',
-    'prisma',
-    'typeorm',
-    'sequelize',
-    'kysely',
-    'mikro-orm',
-  ],
-  'component-lib': [
-    '@radix-ui/react-dialog',
-    '@mui/material',
-    'antd',
-    '@chakra-ui/react',
-    'shadcn',
-  ],
-  testing: [
-    'vitest',
-    'jest',
-    '@testing-library/react',
-    'cypress',
-    'playwright',
-  ],
+export const CATEGORY_TAXONOMY: Record<string, string[]> = {}
+export const MUST_HAVE_CHECKLISTS: Record<string, string[]> = {}
+
+/**
+ * Reverse index: package name -> every category it belongs to. Packages
+ * legitimately span concerns — `@reduxjs/toolkit` is both state and
+ * data-fetching (RTK Query) — so this is a list, not a scalar.
+ */
+export const PACKAGE_TO_CATEGORIES: Record<string, string[]> = {}
+
+function clear(table: Record<string, unknown>): void {
+  for (const key of Object.keys(table)) delete table[key]
+}
+
+function rebuildReverseIndex(): void {
+  clear(PACKAGE_TO_CATEGORIES)
+  for (const [category, pkgs] of Object.entries(CATEGORY_TAXONOMY)) {
+    for (const pkg of pkgs) {
+      const existing = PACKAGE_TO_CATEGORIES[pkg] ?? []
+      if (!existing.includes(category)) existing.push(category)
+      PACKAGE_TO_CATEGORIES[pkg] = existing
+    }
+  }
+}
+
+export interface TaxonomyExtension {
+  /** Extra category -> packages entries; merged into existing categories */
+  taxonomy?: Record<string, string[]>
+  /** Extra checklist key -> required categories */
+  checklists?: Record<string, string[]>
 }
 
 /**
- * Reverse index: package name -> every category it belongs to, built once at
- * module load. Packages legitimately span concerns — `@reduxjs/toolkit` is
- * both state and data-fetching (RTK Query) — so this is a list, not a scalar.
+ * Resets the tables to the curated data and layers a project's extensions on
+ * top. Calling it with no argument restores the defaults; the CLI calls it
+ * once per run, the MCP server once per tool call.
  */
-export const PACKAGE_TO_CATEGORIES: Record<string, string[]> = (() => {
-  const index: Record<string, string[]> = {}
-  for (const [category, pkgs] of Object.entries(CATEGORY_TAXONOMY)) {
-    for (const pkg of pkgs) {
-      index[pkg] = [...(index[pkg] ?? []), category]
-    }
+export function configureTaxonomy(extension: TaxonomyExtension = {}): void {
+  clear(CATEGORY_TAXONOMY)
+  for (const [category, pkgs] of Object.entries(BASE_CATEGORY_TAXONOMY)) {
+    CATEGORY_TAXONOMY[category] = [...pkgs]
   }
-  return index
-})()
+  for (const [category, pkgs] of Object.entries(extension.taxonomy ?? {})) {
+    const existing = CATEGORY_TAXONOMY[category] ?? []
+    for (const pkg of pkgs) if (!existing.includes(pkg)) existing.push(pkg)
+    CATEGORY_TAXONOMY[category] = existing
+  }
+
+  clear(MUST_HAVE_CHECKLISTS)
+  for (const [key, categories] of Object.entries(BASE_MUST_HAVE_CHECKLISTS)) {
+    MUST_HAVE_CHECKLISTS[key] = [...categories]
+  }
+  for (const [key, categories] of Object.entries(extension.checklists ?? {})) {
+    MUST_HAVE_CHECKLISTS[key] = [...categories]
+  }
+
+  rebuildReverseIndex()
+}
+
+configureTaxonomy()
 
 /** Taxonomy categories a package belongs to; empty when unknown. */
 export function categoriesForPackage(pkg: string): string[] {
@@ -97,55 +89,6 @@ export function packageInCategory(pkg: string, category: string): boolean {
   return categoriesForPackage(pkg).includes(category)
 }
 
-export interface DeprecatedApiRule {
-  framework: string
-  /** Matches if ANY of these show up in the skill's extracted apiCalls */
-  deprecatedApiCalls?: string[]
-  /** Matches if ANY of these show up in the skill's extracted importSpecifiers (exact or prefix) */
-  deprecatedImportSpecifiers?: string[]
-  /** human-readable description of what superseded it */
-  message: string
-  /** repo must actually use this import specifier for the rule to fire — otherwise
-   *  we can't tell whether the project moved on, or never used this framework's
-   *  routing/component model in the first place */
-  onlyIfRepoUses: string
-}
-
-/**
- * Small, hand-maintained ruleset for high-churn framework API changes.
- * Not meant to be exhaustive — covers the handful of changes that generate
- * the most real-world skill staleness. Grows over time per-framework.
- */
-/**
- * Required taxonomy categories for a project archetype.
- * Used by the gaps command to recommend missing skill coverage.
- */
-export const MUST_HAVE_CHECKLISTS: Record<string, string[]> = {
-  frontend: [
-    'routing',
-    'state',
-    'data-fetching',
-    'validation',
-    'styling',
-    'testing',
-  ],
-  // Website Specification domains (https://specification.website). These are
-  // production-web-quality domains, not npm-package categories — coverage comes
-  // from a skill declaring the domain in its `categories:` frontmatter.
-  // `well-known` is folded into `agent-readiness` for v1.
-  website: [
-    'foundations',
-    'seo',
-    'accessibility',
-    'security',
-    'performance',
-    'privacy',
-    'resilience',
-    'i18n',
-    'agent-readiness',
-  ],
-}
-
 /**
  * Weights for the four technical scoring dimensions (must sum to 1).
  *
@@ -154,6 +97,10 @@ export const MUST_HAVE_CHECKLISTS: Record<string, string[]> = {
  * contradicts the "one category per skill" guidance. Portfolio coverage is
  * measured by the `gaps` command instead. `focus` rewards the opposite:
  * staying within 1-2 categories.
+ *
+ * None of the scoring constants below are configurable from a project. The
+ * metric is open by design, and keeping its thresholds fixed is what makes a
+ * score comparable across repos and resistant to being tuned away.
  */
 export const SCORE_WEIGHTS = {
   alignment: 0.45,
@@ -199,6 +146,12 @@ export const UNKNOWN_ALIGNMENT_PRIOR = 0.5
 /** Overall score is capped at this value when metric-stuffing is detected. */
 export const STUFFING_SCORE_CAP = 60
 
+/**
+ * Below this overall score a scored skill must carry at least one finding,
+ * so an agent always has something concrete to act on.
+ */
+export const LOW_SCORE_THRESHOLD = 70
+
 /** Stuffing detector thresholds. */
 export const STUFFING_THRESHOLDS = {
   /** Flag when the skill references at least this many packages... */
@@ -214,24 +167,3 @@ export const STUFFING_THRESHOLDS = {
   /** ...and the skill must reference at least this fraction of them. */
   mirroringRatio: 0.8,
 } as const
-
-export const DEPRECATED_API_RULES: DeprecatedApiRule[] = [
-  {
-    framework: 'next',
-    deprecatedApiCalls: [
-      'getServerSideProps',
-      'getStaticProps',
-      'getInitialProps',
-    ],
-    message:
-      'Skill teaches Pages Router data-fetching APIs; project uses App Router conventions.',
-    onlyIfRepoUses: 'next/navigation',
-  },
-  {
-    framework: 'next',
-    deprecatedImportSpecifiers: ['next/router'],
-    message:
-      'Skill imports from next/router (Pages Router); project uses next/navigation (App Router).',
-    onlyIfRepoUses: 'next/navigation',
-  },
-]

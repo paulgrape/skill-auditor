@@ -22,7 +22,8 @@ function repoCategories(repo: RepoReality): string[] {
   return [...cats].sort()
 }
 
-function packagesForCategory(category: string, repo: RepoReality): string[] {
+/** Packages the project declares or imports that belong to the category. */
+export function packagesForCategory(category: string, repo: RepoReality): string[] {
   const pkgs = new Set<string>()
   for (const pkg of Object.keys(repo.usedImports)) {
     if (packageInCategory(pkg, category)) pkgs.add(pkg)
@@ -33,7 +34,7 @@ function packagesForCategory(category: string, repo: RepoReality): string[] {
   return [...pkgs].sort()
 }
 
-function evidenceForCategory(
+export function evidenceForCategory(
   category: string,
   repo: RepoReality,
 ): ImportEvidence[] {

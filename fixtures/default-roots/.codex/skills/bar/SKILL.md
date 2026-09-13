@@ -1,5 +1,5 @@
 ---
-name: codex-bar
+name: bar
 description: Default roots fixture for .codex/skills.
 ---
 

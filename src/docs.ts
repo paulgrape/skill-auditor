@@ -1,5 +1,11 @@
 import type { Command } from 'commander'
+import { CONFIG_FILENAME } from './config.js'
 import { envelope, SCHEMA_VERSION } from './envelope.js'
+import {
+  CATEGORY_TAXONOMY,
+  MUST_HAVE_CHECKLISTS,
+} from './taxonomy.js'
+import { DEPRECATED_API_RULES } from './taxonomyData.js'
 
 /**
  * What each command produces and when it exits non-zero. Commands, arguments
@@ -27,9 +33,10 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
       'usedImports',
       'usedIdentifiers',
       'importEvidence',
+      'config',
     ],
     description:
-      "The project's ground truth: declared dependencies, the import specifiers and identifiers its source really uses, and file-level evidence for each package.",
+      "The project's ground truth: declared dependencies, the import specifiers and identifiers its source really uses, file-level evidence for each package, and the `.skill-auditor.json` (or package.json) config that was applied.",
     exitCodes: [OK, CRASH],
   },
   extract: {
@@ -44,6 +51,8 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
       'packageRefs',
       'importedIdentifiers',
       'unusedImportCount',
+      'locations',
+      'codeEvidence',
     ],
     description:
       'What a SKILL.md claims: the packages, import specifiers and APIs it references, and how substantiated each reference is.',
@@ -53,12 +62,12 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
     alwaysJson: false,
     fields: ['count', 'results', 'errors'],
     description:
-      '`results` is always an array of `{ skillDir, report, score, suggestions }`, one entry per audited skill, even when a single skill directory was passed. `errors` lists skill directories that could not be read as `{ skillDir, error }` and is empty on a clean run.',
+      '`results` is always an array of `{ skillDir, report, score, suggestions }`, one entry per audited skill, even when a single skill directory was passed. `errors` lists skill directories that could not be read as `{ skillDir, error }` and is empty on a clean run. `--baseline` adds a `comparison` object (same shape as the `compare` command).',
     exitCodes: [
       OK,
       {
         code: 1,
-        when: 'a finding at or above --fail-on exists, a skill is below --min-score, or a skill could not be audited',
+        when: 'a finding at or above --fail-on exists, a skill is below --min-score, a skill could not be audited, or --baseline comparison reported a regression',
       },
       USAGE_ERROR,
     ],
@@ -72,7 +81,7 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
       OK,
       {
         code: 1,
-        when: 'a finding at or above --fail-on exists, a skill is below --min-score, or a skill could not be audited',
+        when: 'a finding at or above --fail-on exists, a skill is below --min-score, a skill could not be audited, or --baseline comparison reported a regression',
       },
       USAGE_ERROR,
     ],
@@ -107,10 +116,39 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
   },
   docs: {
     alwaysJson: true,
-    fields: ['tool', 'envelope', 'commands'],
+    fields: ['tool', 'envelope', 'commands', 'taxonomy', 'config'],
     description:
-      'This contract: every command, argument, flag, output shape and exit code, generated from the CLI definition itself.',
+      'This contract: every command, argument, flag, output shape and exit code, generated from the CLI definition itself, plus the live taxonomy tables a project can extend.',
     exitCodes: [OK],
+  },
+  validate: {
+    alwaysJson: false,
+    fields: ['count', 'valid', 'results'],
+    description:
+      'Agent Skills spec lint. `results` is `{ skillDir, skillName, valid, violations[] }`; `valid` is false when any skill has an error-severity violation.',
+    exitCodes: [
+      OK,
+      { code: 1, when: 'a skill has an error-severity spec violation' },
+      USAGE_ERROR,
+    ],
+  },
+  scaffold: {
+    alwaysJson: false,
+    fields: ['skillDir', 'skillPath', 'name', 'category', 'written', 'contents'],
+    description:
+      'A SKILL.md generated from the project\'s import evidence for one category. `written` is false under --dry-run.',
+    exitCodes: [OK, CRASH, USAGE_ERROR],
+  },
+  compare: {
+    alwaysJson: false,
+    fields: ['summary', 'skills'],
+    description:
+      'Score and finding deltas between two `audit --json` payloads. Skills are matched by name.',
+    exitCodes: [
+      OK,
+      { code: 1, when: '--fail-on-regression was passed and a skill regressed' },
+      CRASH,
+    ],
   },
   mcp: {
     alwaysJson: false,
@@ -198,5 +236,16 @@ export function buildDocs(program: Command, version: string) {
         'Every JSON payload starts with this field. It is bumped when a field is removed or changes meaning; new fields may appear without a bump.',
     },
     commands,
+    taxonomy: {
+      categories: CATEGORY_TAXONOMY,
+      checklists: MUST_HAVE_CHECKLISTS,
+      deprecatedApiRules: DEPRECATED_API_RULES,
+    },
+    config: {
+      file: CONFIG_FILENAME,
+      fields: ['taxonomy', 'checklists', 'ignore'],
+      description:
+        'Optional project file, or a "skill-auditor" key in package.json. Extends categories, checklists and ignore globs; scoring thresholds are not configurable.',
+    },
   })
 }
