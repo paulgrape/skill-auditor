@@ -1,9 +1,17 @@
+/**
+ * Package ecosystems the ground truth is read from. `npm` covers every
+ * package.json-managed project (npm, pnpm, yarn, bun); `cargo` is Rust.
+ */
+export type Ecosystem = 'npm' | 'python' | 'go' | 'cargo'
+
 /** A concrete import usage found in project source. */
 export interface ImportEvidence {
   packageName: string
   specifier: string
   /** Project-relative path with forward slashes */
   file: string
+  /** Which ecosystem's source the usage was found in */
+  ecosystem: Ecosystem
   /** Import line or nearby usage snippet */
   example?: string
 }
@@ -12,7 +20,11 @@ export interface ImportEvidence {
  * Shape of "ground truth" extracted from the actual project.
  */
 export interface RepoReality {
-  /** Package name -> declared version range from package.json */
+  /** Ecosystems with a manifest or source files in the project, sorted */
+  ecosystems: Ecosystem[]
+  /** Package name -> declared version range, merged across every manifest
+   *  (package.json + workspaces, pyproject.toml, requirements*.txt, go.mod,
+   *  Cargo.toml). Root declarations win on conflict. */
   declaredDeps: Record<string, string>
   /** Package name -> set of specific import specifiers actually used in source
    *  e.g. "next" -> Set{"next/navigation", "next/router"} */
@@ -33,11 +45,17 @@ export interface RepoReality {
  */
 export type ReferenceSubstantiation = 'usage' | 'fenced' | 'mention'
 
-/** Where in SKILL.md something was found, so an agent can edit the exact section. */
+/**
+ * Where in the skill something was found, so an agent can edit the exact
+ * place. Every finding carries one; a finding about the skill as a whole
+ * points at line 1 of SKILL.md.
+ */
 export interface SourceLocation {
-  /** 1-based line in SKILL.md (the fence opener or the line holding the inline span) */
+  /** Skill-relative path with forward slashes: `SKILL.md`, or a bundled `references/…` / `scripts/…` file */
+  file: string
+  /** 1-based line: the import statement, the line holding the inline span, or the fence opener */
   line: number
-  /** Text of the nearest heading above, without `#` markers */
+  /** Text of the nearest markdown heading above, without `#` markers */
   heading?: string
 }
 
@@ -48,20 +66,22 @@ export interface PackageReference {
   substantiation: ReferenceSubstantiation
   /** True when at least one section referencing this package carries enough explanatory prose */
   substantiatedByProse: boolean
-  /** First place the package is referenced in SKILL.md, when it was found there */
-  location?: SourceLocation
+  /** First place the package is referenced */
+  location: SourceLocation
 }
 
-/** First occurrence of each extracted reference in SKILL.md. */
+/** First occurrence of each extracted reference. */
 export interface SkillLocations {
   packages: Record<string, SourceLocation>
   importSpecifiers: Record<string, SourceLocation>
   apiCalls: Record<string, SourceLocation>
+  /** Import statements whose bindings are never used below them, one entry each */
+  unusedImports: SourceLocation[]
 }
 
 /** What kinds of code the skill's fenced blocks contained. */
 export interface CodeEvidence {
-  /** JS/TS or Python fences that yielded at least one reference */
+  /** JS/TS, Python, Go or Rust fences that yielded at least one reference */
   codeFences: number
   /** Shell-family fences (bash, sh, shell, zsh, powershell, console) */
   shellFences: number
@@ -73,13 +93,14 @@ export interface CodeEvidence {
 export interface SkillIdentifiers {
   skillName: string
   skillPath: string
-  /** Taxonomy categories declared in the skill's frontmatter `categories:` list */
+  /** Taxonomy categories declared in the skill's frontmatter `metadata.categories` */
   categories: Set<string>
   /** Package/module names referenced in code blocks or inline code */
   packages: Set<string>
   /** Full import specifiers referenced, e.g. "next/router" */
   importSpecifiers: Set<string>
-  /** Bare identifiers that look like API/function calls, e.g. "getServerSideProps" */
+  /** Bare identifiers that look like API/function calls in JS/TS code, e.g. "getServerSideProps".
+   *  Feed the deprecated-API rules only; they do not decide the skill's kind. */
   apiCalls: Set<string>
   /** Package name -> substantiation record (how real the reference is) */
   packageRefs: Record<string, PackageReference>
@@ -87,7 +108,7 @@ export interface SkillIdentifiers {
   importedIdentifiers: Record<string, Set<string>>
   /** Import statements across all snippets whose bindings are never used below them */
   unusedImportCount: number
-  /** Where each reference was first seen in SKILL.md */
+  /** Where each reference was first seen (SKILL.md or a bundled file) */
   locations: SkillLocations
   /** Which kinds of fenced code the skill contains */
   codeEvidence: CodeEvidence
@@ -110,8 +131,8 @@ export interface DriftFinding {
   message: string
   skillReference: string
   repoReality?: string
-  /** Where in SKILL.md the finding points, when it concerns one place */
-  location?: SourceLocation
+  /** Where the finding points: the reference that caused it, or `SKILL.md:1` for a skill-wide finding */
+  location: SourceLocation
 }
 
 export interface AlignmentReport {
@@ -130,10 +151,14 @@ export interface AlignmentReport {
 
 /**
  * - technical: package-backed, fully alignment-scored
- * - mixed: a few technical references, alignment-scored
+ * - mixed: a few package references, alignment-scored
  * - procedural: a command-line workflow (shell fences, inline mentions, no
- *   JS/Python examples) — findings are reported, alignment is not scored
- * - neutral: no technical references at all; intrinsic quality only
+ *   JS/Python/Go/Rust examples) — findings are reported, alignment is not scored
+ * - neutral: no package references at all; intrinsic quality only
+ *
+ * Kind is decided by package and import-specifier references, which only
+ * language-aware code can produce. API-call-shaped identifiers never
+ * decide it.
  */
 export type SkillKind = 'technical' | 'mixed' | 'procedural' | 'neutral'
 

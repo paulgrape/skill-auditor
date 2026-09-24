@@ -32,7 +32,7 @@ skill-auditor list --json
 npx -y skill-auditor@latest list --json
 ```
 
-Every JSON payload starts with a `schemaVersion` field describing the contract it follows. If a command here is rejected or a payload doesn't look as described, ask the CLI itself instead of guessing — it prints every command, flag, output shape and exit code:
+Every JSON payload starts with a `schemaVersion` field describing the contract it follows (this skill describes schema 2, skill-auditor 2.x). If a command here is rejected or a payload doesn't look as described, ask the CLI itself instead of guessing — it prints every command, flag, output shape and exit code:
 
 ```bash
 skill-auditor docs
@@ -82,13 +82,13 @@ skill-auditor spec-check $PROJECT --json
 skill-auditor spec-check $PROJECT --priority required --json
 ```
 
-From `scan`: note `declaredDeps` and `usedImports` — ground truth for packages and import specifiers.
+From `scan`: note `ecosystems` (which of `npm`, `python`, `go`, `cargo` the project contains), `declaredDeps` and `usedImports` — ground truth for packages and import specifiers across every language. Python names are lowercase with hyphens (`python-dotenv`), Go modules are `host/owner/repo`, Rust crates use underscores (`serde_json`). Write skill examples in the language the evidence comes from; `python`, `go` and `rust` fences count as package references just like JS/TS ones.
 
 From `audit`:
 - Always `{ schemaVersion, count, results: [{ skillDir, report, score, suggestions }], errors: [{ skillDir, error }] }` — one result per skill, whether you passed a single skill directory or a skills root
 - `errors` is empty on a clean run; an entry means that skill's `SKILL.md` could not be read — tell the user, do not try to "fix" it by rewriting the file blind
-- Fix skills with low `score.overall` or critical findings using `suggestions`. Each finding includes `location: { line, heading }` pointing at the SKILL.md section to edit
-- Skip `kind: neutral` and `kind: procedural` skills for alignment fixes (quality-only). CSS/HTML-only skills are `neutral`; shell-workflow skills with no JS/Python examples are `procedural`
+- Fix skills with low `score.overall` or critical findings using `suggestions`. Each finding includes `location: { file, line, heading }` pointing at the file (relative to the skill directory: `SKILL.md`, or a bundled `scripts/…` file) and line to edit
+- Skip `kind: neutral` and `kind: procedural` skills for alignment fixes (quality-only). A skill's kind is decided by its package references only: no package references means `neutral` (CSS/HTML-only, tone/style, or skills that only show API calls), and package references demonstrated only in shell fences means `procedural`
 
 From `gaps`:
 - `gaps[]` lists uncovered categories (`kind`: `uncovered-category` or `checklist-gap`)
@@ -169,7 +169,7 @@ Canonical examples from `gaps[].evidence[].file`:
 Adapt from `evidence[].example`. Use 2–3 blocks when evidence provides enough material.
 
 ```text
-// from <evidence-file>
+// from <evidence-file> — tag the fence for the evidence's ecosystem: ts, python, go or rust
 import { ... } from '<actual-specifier>'
 ...
 ```
@@ -188,7 +188,8 @@ Pick bullets for the gap's `category` from the map below. Keep only items releva
 
 - Note directory layout from evidence file paths (e.g. stores under `src/stores/`, routes under `app/`)
 - Match naming patterns seen in those files
-```
+
+---
 
 Rules for new gap skills:
 - `name`: lowercase, hyphens, max 64 chars

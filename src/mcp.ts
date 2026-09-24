@@ -150,7 +150,7 @@ export const MCP_TOOLS: McpTool[] = [
     name: 'audit',
     title: 'Audit skills against the project',
     description:
-      'Score one skill directory, or every skill under a skills root, against the project it is installed in. Returns per-skill findings, a score breakdown and concrete suggestions.',
+      'Score one skill directory, or every skill under a skills root, against the project it is installed in. Returns per-skill findings (each with a location: file and line inside the skill directory), a score breakdown and concrete suggestions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -261,7 +261,7 @@ export const MCP_TOOLS: McpTool[] = [
     name: 'scan',
     title: 'Scan project reality',
     description:
-      "Report what the project really uses: declared dependencies, the import specifiers and identifiers its source imports, and file-level evidence per package. This is the ground truth every skill is scored against — read it before writing or fixing a skill.",
+      "Report what the project really uses: the ecosystems present (npm, python, go, cargo), declared dependencies from every manifest, the import specifiers and identifiers its source imports, and file-level evidence per package. This is the ground truth every skill is scored against — read it before writing or fixing a skill.",
     inputSchema: {
       type: 'object',
       properties: { project: PROJECT_PROPERTY },
@@ -271,18 +271,25 @@ export const MCP_TOOLS: McpTool[] = [
       type: 'object',
       properties: {
         schemaVersion: SCHEMA_VERSION_PROPERTY,
+        ecosystems: {
+          type: 'array',
+          items: { type: 'string', enum: ['npm', 'python', 'go', 'cargo'] },
+        },
         declaredDeps: { type: 'object' },
         usedImports: { type: 'object' },
         usedIdentifiers: { type: 'object' },
         importEvidence: { type: 'object' },
+        parser: { type: 'string', enum: ['lexer', 'ts-morph'] },
         config: { type: 'object' },
       },
       required: [
         'schemaVersion',
+        'ecosystems',
         'declaredDeps',
         'usedImports',
         'usedIdentifiers',
         'importEvidence',
+        'parser',
         'config',
       ],
     },

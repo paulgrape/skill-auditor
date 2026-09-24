@@ -13,7 +13,7 @@ Audit Agent Skills (`SKILL.md`) against the reality of the project they are inst
 Skills are the memory an agent brings to your codebase. When they drift from reality, the agent confidently applies stale patterns. `skill-auditor` closes that loop:
 
 - **Set a target, optimize toward it.** Every command emits a machine-readable `--json` score. An agent runs `audit`, reads `suggestions`, fixes each finding substantively, and re-runs to confirm the findings are gone — a measurable improvement loop, not a one-shot check.
-- **Ground truth, not vibes.** Scores come from the repo's actual `package.json` deps, imported specifiers, and the identifiers the project really imports from each package, so "better" means "closer to how this project really works."
+- **Ground truth, not vibes.** Scores come from the repo's actual manifests (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`), imported specifiers, and the identifiers the project really imports from each package, so "better" means "closer to how this project really works."
 - **Gaming-resistant by design.** The metric is open, so it is built so that maxing it out requires genuinely good content: only references demonstrated in working code count fully, examples are cross-verified against the repo's real API usage, and stuffing patterns (name-drops without examples, unused import lines, pasted dependency lists, same-category padding) are detected as `metric-stuffing` findings that cap the score at 60.
 - **Great for scheduled audits.** On fast-changing projects, skills rot quietly as dependencies and patterns shift. Run `skill-auditor` on a schedule (cron, CI, or a Cursor automation) with `gaps --fail-on-gap` so drift and missing coverage surface automatically instead of at the next incident.
 
@@ -21,11 +21,20 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 
 ### Covered today
 
-**Frontend web apps (JS/TS)** — the core audit loop targets React/Next.js-style projects. Ground truth comes from `package.json` dependencies and import usage scanned across `*.{ts,tsx,js,jsx}` source files. In a monorepo, the dependencies of every workspace package are merged in too, resolved from the root `workspaces` field or `pnpm-workspace.yaml`. Node builtins (`node:fs`, `fs`) and path aliases (`@/…`, `~/…`, `#internal`) are not dependencies, so they are excluded from both sides of the comparison.
+**Ground truth across four ecosystems.** A project's declared stack is read from every manifest under it and its imports are scanned per language; a polyglot repo with a `frontend/` package.json, a `backend/` pyproject and a Go service needs no configuration. Standard libraries, relative imports, path aliases (`@/…`, `~/…`, `#internal`) and the project's own modules are not dependencies, so they are excluded from both sides of the comparison. `scan` reports which `ecosystems` it found.
+
+| Ecosystem | Declared by | Used by |
+|-----------|-------------|---------|
+| **npm** | `package.json` (`dependencies`, `devDependencies`, `peerDependencies`), merged across npm/yarn `workspaces` and `pnpm-workspace.yaml` packages | `import`/`export … from`, side-effect imports, `require()`, dynamic `import()` in `.ts .tsx .js .jsx .mjs .cjs .mts .cts` |
+| **Python** | `pyproject.toml` (PEP 621 `dependencies`, optional groups, `dependency-groups`, Poetry and PDM tables), `requirements*.txt` | `import x`, `from x import y` in `.py` — names PEP 503-normalized |
+| **Go** | `go.mod` direct `require` entries (indirect ones are not the stack) | `import` declarations in `.go`, reduced to the module (`github.com/owner/repo`, major-version suffix folded) |
+| **Cargo** | `Cargo.toml` (`dependencies`, `dev-`, `build-`, target-specific and `workspace.dependencies`) | `use`, `extern crate` and bare `crate::path` usage in `.rs` — hyphens normalized to `_` |
+
+**Frontend web apps (JS/TS)** remain the core of the *taxonomy*: categories, checklists, conflict detection and gap coverage know the React/Next.js ecosystem best. Python, Go and Rust packages are audited for alignment (declared, used, verified identifiers) without a category unless you add one in `.skill-auditor.json`.
 
 | Area | What is checked |
 |------|-----------------|
-| **Languages** | JavaScript, TypeScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) |
+| **Languages** | JavaScript, TypeScript, Python, Go, Rust |
 | **Frameworks** | React ecosystem; **Next.js** (including Pages Router → App Router drift detection) |
 | **Routing** | `next`, `react-router`, `@tanstack/react-router`, `wouter`, … |
 | **State** | `zustand`, `redux`, `jotai`, `recoil`, `mobx`, `valtio`, … |
@@ -42,12 +51,23 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 - `--checklist website` — [Website Specification](https://specification.website) domains (foundations, SEO, accessibility, security, performance, privacy, resilience, i18n, agent-readiness)
 - `spec-check` — static compliance scan for HTML head, public assets, header config, routes (opt-in)
 
-**Skill kinds:** technical skills (package/API references) get full alignment scoring; mixed skills (a few technical refs) are scored the same way; **procedural** skills (shell workflow, no JS/Python examples) and **neutral** skills (tone/style, no tech refs) get intrinsic quality only — they are not alignment-scored. Only JS/TS-family code blocks (and untagged ones) can produce package or API references — CSS, HTML, shell and other fences are treated as prose. `python` fences contribute their non-stdlib imports as package references.
+**Skill kinds:** a skill's kind is decided by its package references alone. Technical skills (more than three package references) and mixed skills (one to three) get full alignment scoring; **procedural** skills (package references, but the only fenced code is shell) and **neutral** skills (no package references) get intrinsic quality only — they are not alignment-scored. API-call-shaped identifiers (`readFileSync(`) never make a skill technical on their own; they are still extracted and verified against the repo's imports for `unverified-api` findings. Fenced blocks tagged `js`/`ts`/`jsx`/`tsx` (and untagged ones), `python`, `go` and `rust` are read with the same import scanners the project scan uses; CSS, HTML, shell and other fences are treated as prose. Bundled `scripts/` and `references/` files are read by extension the same way.
+
+### Parsers
+
+JS/TS source is read by a built-in import lexer that needs no dependencies: it masks comments, strings, template literals, regex literals and JSX text, then reads every import form from what is left. Projects that want the TypeScript compiler can opt into `ts-morph`, an optional peer dependency:
+
+```bash
+npm install -D ts-morph
+skill-auditor scan . --parser ts-morph        # or SKILL_AUDITOR_PARSER=ts-morph
+```
+
+Both parsers produce the same ground truth on the test fixtures (see `test/lexer.test.mjs`), and `scan` reports the `parser` it used. The cache is keyed by parser too, so switching never serves stale results.
 
 ### Planned
 
 - **Prose analysis** — score and improve the natural-language parts of skills (clarity, structure, actionability), not just code references
-- **Backend** — Node/Python/Go APIs, auth, ORMs, queues, and service patterns
+- **Backend taxonomy** — categories for Python/Go/Rust web frameworks, ORMs, queues and service patterns, so backend skills get focus and gap coverage too
 - **System & DevOps** — infra, CI/CD, containers, observability, deployment targets
 - **Data science** — notebooks, ML libraries, pipelines, and experiment tooling
 
@@ -57,7 +77,7 @@ Contributions to the taxonomy ([`src/taxonomyData.ts`](src/taxonomyData.ts)) are
 
 ## Install
 
-Run the CLI directly with no install:
+Requires Node.js 20 or newer. Run the CLI directly with no install:
 
 ```bash
 npx skill-auditor audit <path-to-skill> --project .
@@ -116,7 +136,7 @@ There is deliberately no per-skill coverage dimension: rewarding one skill for t
 
 **Neutral skills** (no tech references, e.g. tone/style skills) and **procedural skills** (command-line workflows whose fenced code is shell): repo alignment is `N/A`. Only an intrinsic quality score (0–100) is reported. Findings such as a mentioned rival library are still emitted.
 
-A scored skill below 70 never comes back with an empty findings list: if the dimensions alone dragged the score down, an `unscorable` info finding names what would move it. Findings include `location: { line, heading }` pointing at the SKILL.md section to edit.
+A scored skill below 70 never comes back with an empty findings list: if the dimensions alone dragged the score down, an `unscorable` info finding names what would move it. Every finding includes `location: { file, line, heading? }` pointing at the file and line to edit — `SKILL.md` or a bundled `scripts/`/`references/` file; skill-wide findings such as `category-conflict` point at `SKILL.md` line 1.
 
 Use `--format markdown` for a PR comment, `--format sarif` for GitHub code scanning, and `--baseline previous.json` (with `--fail-on-regression`) to gate an improvement loop. `--json` remains a shorthand for `--format json`.
 
@@ -169,7 +189,7 @@ skill-auditor audit-all .cursor/skills --project . --json
 skill-auditor validate .cursor/skills --json
 ```
 
-Checks `name` (format, length, matches the parent directory), `description` (required, ≤1024 characters, should say when to use the skill), unknown frontmatter fields, `metadata` value types, and body length. Error-severity violations exit `1`. A top-level `categories:` list is still read for coverage, but `validate` warns to move it under `metadata.categories`.
+Checks `name` (format, length, matches the parent directory), `description` (required, ≤1024 characters, should say when to use the skill), unknown frontmatter fields, `metadata` value types, and body length. Error-severity violations exit `1`. Categories are read from `metadata.categories` only; a top-level `categories:` list is not part of the Agent Skills spec and is ignored, and `validate` warns to move it.
 
 ### `scaffold` — generate a gap skill from repo evidence
 
@@ -178,7 +198,7 @@ skill-auditor scaffold routing --project . --out .cursor/skills
 skill-auditor scaffold routing --project . --dry-run --json
 ```
 
-Writes `.cursor/skills/routing/SKILL.md` using the project's real import specifiers and file paths. `--dry-run` prints the file without writing it. Prefer this over inventing a SKILL.md by hand.
+Writes `.cursor/skills/routing/SKILL.md` using the project's real import specifiers and file paths, with code fences tagged for the ecosystem each example comes from. `--dry-run` prints the file without writing it. Prefer this over inventing a SKILL.md by hand.
 
 ### `compare` — score deltas between two audits
 
@@ -196,7 +216,7 @@ skill-auditor scan .
 skill-auditor extract ./my-skill
 ```
 
-`scan` also reports the `.skill-auditor.json` (or `package.json#skill-auditor`) config that was applied: extra taxonomy entries, checklists and ignore globs. Scoring thresholds are not configurable.
+`scan` reports the `ecosystems` it found, the `parser` it used and the `.skill-auditor.json` (or `package.json#skill-auditor`) config that was applied: extra taxonomy entries, checklists and ignore globs. `node_modules`, `.venv`, `__pycache__`, `vendor`, `target` and other build/dependency directories are ignored by default. Every RepoReality-building command accepts `--no-cache` and `--parser <lexer|ts-morph>`. Scoring thresholds are not configurable.
 
 Extend the taxonomy for a project:
 
@@ -233,16 +253,18 @@ Every `--json` payload starts with a `schemaVersion`. It is bumped when a field 
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "count": 1,
   "results": [{ "skillDir": "...", "report": {}, "score": {}, "suggestions": [] }],
   "errors": []
 }
 ```
 
-`count` is the number of skills scored. `errors` lists skill directories that could not be read as `{ "skillDir", "error" }`; it is empty on a clean run, and any entry makes the command exit `1`. Findings on each result include `location: { line, heading }` when the extractor knows which SKILL.md section produced them.
+`count` is the number of skills scored. `errors` lists skill directories that could not be read as `{ "skillDir", "error" }`; it is empty on a clean run, and any entry makes the command exit `1`. Every finding carries `location: { file, line, heading? }`; `file` is relative to the skill directory.
 
-`validate` returns `{ count, valid, results }`. `scaffold --json` returns the generated file (`written` is false under `--dry-run`). `compare` returns `{ summary, skills }`. `scan` includes the applied `config`. `extract` includes `locations` and `codeEvidence`. Run `skill-auditor docs` for the live field list.
+`validate` returns `{ count, valid, results }`. `scaffold --json` returns the generated file (`written` is false under `--dry-run`). `compare` returns `{ summary, skills }`. `scan` includes `ecosystems`, `parser`, per-evidence `ecosystem` and the applied `config`. `extract` includes `locations` (each with `file`) and `codeEvidence`. Run `skill-auditor docs` for the live field list.
+
+**Schema 2** (skill-auditor 2.0) changed from schema 1: `location` is required on every finding and every extracted reference, and gained `file`; `RepoReality` gained `ecosystems` and `parser`, and each `importEvidence` entry gained `ecosystem`; a skill's `kind` no longer counts API calls, so skills with only API-call-shaped identifiers are `neutral` rather than `mixed`; and `categories` are read from `metadata.categories` only. Consumers pinned to schema 1 should check `schemaVersion` and stay on skill-auditor 1.x.
 
 ## Agent loop
 
@@ -291,7 +313,7 @@ for (const { report, score } of results) {
 }
 ```
 
-`buildRepoReality`, `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps`, `runSpecCompliance`, `validateSkill` and `scaffoldSkill` are exported individually when you want a single stage, along with the TypeScript types for every result. `auditSkills` throws on the first unreadable skill; `auditSkillsSafely` returns `{ results, errors }` instead, which is what the CLI and MCP server use.
+`buildRepoReality(root, { cache?, parser? })`, `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps`, `runSpecCompliance`, `validateSkill` and `scaffoldSkill` are exported individually when you want a single stage, along with the TypeScript types for every result. The per-language import scanners (`scanJavaScriptImports`, `scanPythonImports`, `scanGoImports`, `scanRustImports`) and manifest readers (`readPyproject`, `readRequirements`, `readGoMod`, `readCargoToml`) are exported too. `auditSkills` throws on the first unreadable skill; `auditSkillsSafely` returns `{ results, errors }` instead, which is what the CLI and MCP server use.
 
 ## Starter templates
 

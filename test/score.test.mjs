@@ -242,8 +242,21 @@ describe('metric-stuffing cap', () => {
 })
 
 describe('explainLowScore', () => {
-  test('names the gap when a scored skill has no drift findings', () => {
+  test('API calls alone no longer produce a scored-but-unexplained skill', () => {
     const skill = makeSkill({ apiCalls: ['inventedHelper'] })
+    const repo = makeRepo()
+    const report = buildAlignmentReport(skill, repo)
+    const scored = scoreSkill(report, skill, repo)
+    assert.equal(scored.kind, 'neutral')
+    assert.equal(scored.overall, null)
+    assert.equal(explainLowScore(report, scored, skill), null)
+  })
+
+  test('names the gap when a scored skill has no drift findings', () => {
+    // The extractor always records a package for every import specifier, so
+    // this shape only arises from hand-built input; the guard stays as the
+    // safety net behind "never a low score without a finding".
+    const skill = makeSkill({ importSpecifiers: ['left-pad/lib'] })
     const repo = makeRepo()
     const report = buildAlignmentReport(skill, repo)
     const scored = scoreSkill(report, skill, repo)

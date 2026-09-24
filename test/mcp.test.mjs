@@ -159,7 +159,9 @@ describe('mcp server', () => {
     test('scan returns the project ground truth as structured content', () => {
       const { structuredContent, content, isError } = byId(responses, 1).result
       assert.equal(isError, false)
-      assert.equal(structuredContent.schemaVersion, 1)
+      assert.equal(structuredContent.schemaVersion, 2)
+      assert.deepEqual(structuredContent.ecosystems, ['npm'])
+      assert.equal(structuredContent.parser, 'lexer')
       assert.ok(structuredContent.usedImports.next.includes('next/navigation'))
       assert.deepEqual(JSON.parse(content[0].text), structuredContent)
     })

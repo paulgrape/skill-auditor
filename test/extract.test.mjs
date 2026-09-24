@@ -22,7 +22,11 @@ describe('non-package specifiers', () => {
     }
   })
 
-  test('a skill referencing only non-packages is unscorable, not silently empty', () => {
+  test('a skill referencing only non-packages is neutral: API calls do not make it technical', () => {
+    // It still has API-call-shaped identifiers (readFileSync(, join(), which
+    // used to push it into the mixed bucket and grade it on an alignment it
+    // never claimed. Since 2.0 only package references decide the kind.
+    assert.ok(extracted.apiCalls.length > 0)
     const { results } = parseJson([
       'audit',
       './fixtures/builtin-skill',
@@ -30,9 +34,9 @@ describe('non-package specifiers', () => {
       FAKE_PROJECT,
       '--json',
     ])
-    assert.equal(results[0].report.scorableReferenceCount, 0)
-    assert.equal(results[0].score.breakdown.specificity, 0)
-    assert.equal(results[0].report.findings[0].kind, 'unscorable')
+    assert.equal(results[0].score.kind, 'neutral')
+    assert.equal(results[0].score.overall, null)
+    assert.deepEqual(results[0].report.findings, [])
   })
 })
 
@@ -143,6 +147,18 @@ describe('procedural skills', () => {
     ])
     assert.equal(results[0].score.kind, 'procedural')
     assert.equal(results[0].score.overall, null)
+  })
+
+  test('a `# comment` inside a shell fence does not start a new section', () => {
+    // Splitting there used to leave half a fence in each section; the fence
+    // regex then paired the orphaned closer with the next opener and read
+    // the prose in between as an untagged code block.
+    const extracted = parseJson(['extract', './fixtures/procedural-skill'])
+    assert.equal(extracted.codeEvidence.shellFences, 2)
+    assert.equal(extracted.codeEvidence.codeFences, 0)
+    assert.deepEqual(extracted.apiCalls, [])
+    assert.deepEqual(extracted.packages, ['vitest'])
+    assert.equal(extracted.locations.packages.vitest.heading, 'Run the test CLI')
   })
 
   test('the bundled workflow skill is procedural, not a failing technical skill', () => {

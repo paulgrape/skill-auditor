@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 1.4.x   | Yes       |
+| 2.0.x   | Yes       |
+| 1.4.x   | Security fixes only |
 | 1.3.x   | No        |
 | 1.2.x   | No        |
 | 1.1.x   | No        |
@@ -20,7 +21,7 @@ We aim to acknowledge reports within a few business days.
 
 ## How this tool handles data
 
-`skill-auditor` is a **local-only CLI**. It reads files on your machine (project source, `package.json`, `SKILL.md`, bundled skill scripts) and writes results to stdout/stderr. It does **not**:
+`skill-auditor` is a **local-only CLI**. It reads files on your machine (project source in JS/TS, Python, Go and Rust; `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Cargo.toml`; `SKILL.md` and bundled skill scripts) and writes results to stdout/stderr, plus a scan cache under `node_modules/.cache/skill-auditor/` or the OS temp directory. It does **not**:
 
 - upload project or skill contents to any service
 - call external APIs or fetch remote URLs at runtime
@@ -36,4 +37,4 @@ Network use is limited to **you** installing the package (`npm install`, `npx`) 
 
 ## Scope of audits
 
-Commands scan paths you pass (`--project`, skill roots). Only run it on directories you trust. Parsing uses `ts-morph` and regex over source files; malformed or hostile inputs should fail safely, but treat untrusted repos like any other local analysis tool.
+Commands scan paths you pass (`--project`, skill roots). Only run it on directories you trust. Parsing is a built-in lexer (comments, strings and regex literals are masked, then imports are read with anchored regular expressions) plus a minimal TOML reader; source is never evaluated. With `--parser ts-morph` the optional TypeScript compiler parses JS/TS instead. Malformed or hostile inputs should fail safely, but treat untrusted repos like any other local analysis tool.

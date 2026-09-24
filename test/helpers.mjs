@@ -114,14 +114,26 @@ export function makeSkill({
     packageRefs: Object.fromEntries(
       packages.map(p => [
         p,
-        { packageName: p, substantiation, substantiatedByProse },
+        {
+          packageName: p,
+          substantiation,
+          substantiatedByProse,
+          location: { file: 'SKILL.md', line: 1 },
+        },
       ]),
     ),
     importedIdentifiers: Object.fromEntries(
       Object.entries(importedIdentifiers).map(([k, v]) => [k, new Set(v)]),
     ),
     unusedImportCount,
-    locations: { packages: {}, importSpecifiers: {}, apiCalls: {} },
+    locations: {
+      packages: Object.fromEntries(
+        packages.map(p => [p, [{ file: 'SKILL.md', line: 1 }]]),
+      ),
+      importSpecifiers: {},
+      apiCalls: {},
+      unusedImports: [],
+    },
     codeEvidence,
   }
 }
@@ -131,8 +143,10 @@ export function makeRepo({
   declaredDeps = {},
   usedImports = {},
   usedIdentifiers = {},
+  ecosystems = ['npm'],
 } = {}) {
   return {
+    ecosystems,
     declaredDeps,
     usedImports: Object.fromEntries(
       Object.entries(usedImports).map(([k, v]) => [k, new Set(v)]),

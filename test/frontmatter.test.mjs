@@ -124,7 +124,7 @@ describe('accessors', () => {
     assert.equal(frontmatterString({ name: '' }, 'name'), undefined)
   })
 
-  test('declaredCategories prefers metadata.categories over a top-level list', () => {
+  test('declaredCategories reads metadata.categories only (top-level list dropped in 2.0)', () => {
     assert.deepEqual(
       declaredCategories({
         metadata: { categories: 'seo, accessibility' },
@@ -132,7 +132,8 @@ describe('accessors', () => {
       }),
       ['seo', 'accessibility'],
     )
-    assert.deepEqual(declaredCategories({ categories: ['seo'] }), ['seo'])
+    assert.deepEqual(declaredCategories({ metadata: { categories: 'seo' } }), ['seo'])
+    assert.deepEqual(declaredCategories({ categories: ['seo'] }), [])
     assert.ok(frontmatterMap({ metadata: { a: 'b' } }, 'metadata'))
   })
 })

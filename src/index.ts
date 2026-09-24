@@ -24,7 +24,22 @@ export {
   type AuditFormat,
 } from './formats.js'
 export { detectGaps, requireChecklist } from './gaps.js'
-export { buildRepoReality } from './repoReality.js'
+export {
+  buildRepoReality,
+  PARSERS,
+  resolveParser,
+  type BuildRepoRealityOptions,
+  type Parser,
+} from './repoReality.js'
+export { readGoMod, scanGoImports, type GoModule } from './ecosystems/go.js'
+export { scanJavaScriptImports } from './ecosystems/javascript.js'
+export {
+  readPyproject,
+  readRequirements,
+  scanPythonImports,
+} from './ecosystems/python.js'
+export { readCargoToml, scanRustImports } from './ecosystems/rust.js'
+export type { ImportBinding, SourceImport } from './ecosystems/types.js'
 export {
   auditReport,
   auditSkill,
