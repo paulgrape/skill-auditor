@@ -1,6 +1,6 @@
 {
   "name": "skill-auditor",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Audit imported Agent Skills (SKILL.md) against the reality of the project they are installed in: npm, Python, Go and Cargo dependencies and imports.",
   "bin": {
     "skill-auditor": "dist/cli.js"
