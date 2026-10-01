@@ -95,14 +95,19 @@ export function loadProjectConfig(projectRoot: string): LoadedProjectConfig {
   }
 
   const pkgPath = path.join(projectRoot, 'package.json')
+  let pkg: unknown
   try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
-    if (pkg && typeof pkg === 'object' && PACKAGE_JSON_KEY in pkg) {
-      const source = `package.json#${PACKAGE_JSON_KEY}`
-      return { source, config: coerce(pkg[PACKAGE_JSON_KEY], source) }
-    }
+    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
   } catch {
     // missing or malformed package.json: the scan already tolerates this
+    return { source: null, config: {} }
+  }
+  if (pkg && typeof pkg === 'object' && PACKAGE_JSON_KEY in pkg) {
+    const source = `package.json#${PACKAGE_JSON_KEY}`
+    return {
+      source,
+      config: coerce((pkg as Record<string, unknown>)[PACKAGE_JSON_KEY], source),
+    }
   }
 
   return { source: null, config: {} }

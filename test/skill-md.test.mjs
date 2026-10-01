@@ -1,8 +1,24 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { describe, test } from 'node:test'
-import { repoRoot, runExpectingFailure } from './helpers.mjs'
+import { after, describe, test } from 'node:test'
+import { repoRoot, run, runExpectingFailure } from './helpers.mjs'
+
+/**
+ * `$BASELINE` in the skill is a saved audit payload; the test writes a real
+ * one so the documented --baseline commands run against an existing file.
+ * Written before any test so the extraction can be synchronous.
+ */
+const baselineDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-skill-md-'))
+const baselineFile = path.join(baselineDir, 'baseline.json')
+const afterFile = path.join(baselineDir, 'after.json')
+const auditPayload = run(
+  ['audit', './fixtures/nested-skills', '--project', './fixtures/fake-project', '--json'],
+  { allowFail: true },
+).stdout
+fs.writeFileSync(baselineFile, auditPayload)
+fs.writeFileSync(afterFile, auditPayload)
 
 /**
  * Extracts every `skill-auditor ...` invocation from the bundled skill so the
@@ -34,13 +50,27 @@ function documentedCommands() {
 describe('bundled SKILL.md', () => {
   const commands = documentedCommands()
 
+  after(() => fs.rmSync(baselineDir, { recursive: true, force: true }))
+
   test('documents runnable commands', () => {
     assert.ok(commands.length >= 6, `found only ${commands.length} commands`)
   })
 
+  test('documents the baseline loop', () => {
+    assert.ok(commands.some(command => command.includes('--baseline')))
+    assert.ok(commands.some(command => command.includes('--fail-on-regression')))
+    assert.ok(commands.some(command => command.startsWith('compare ')))
+  })
+
   for (const command of commands) {
     test(`CLI accepts: skill-auditor ${command}`, () => {
-      const { stderr } = runExpectingFailure(command.split(/\s+/))
+      // Substituted after splitting: a temp path may contain spaces.
+      const args = command.split(/\s+/).map(arg => {
+        if (arg === '$BASELINE') return baselineFile
+        if (arg === '$AFTER') return afterFile
+        return arg
+      })
+      const { stderr } = runExpectingFailure(args)
       // A non-zero exit is expected (findings, gaps, failing spec items); a
       // usage or runtime error is not.
       assert.doesNotMatch(stderr, /\b[Ee]rror:/, stderr)

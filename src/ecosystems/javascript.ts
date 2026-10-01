@@ -259,6 +259,37 @@ export function parseImportClause(clause: string): ImportBinding[] {
   return bindings
 }
 
+/**
+ * Parses the clause of a re-export (`* as ns`, `{ a, b as c, default as D }`)
+ * into bindings the same way `parseImportClause` does for imports, so a
+ * barrel file tells the repo scan which names the project takes from a
+ * package. `default as D` records `D`, matching how a default import is
+ * recorded under its local name. A bare `*` forwards everything and has no
+ * name of its own.
+ */
+export function parseExportClause(clause: string): ImportBinding[] {
+  const trimmed = clause.trim()
+  const namespace = trimmed.match(/^\*\s+as\s+([\w$]+)$/)
+  if (namespace) return [{ source: namespace[1], local: namespace[1] }]
+
+  const braces = trimmed.match(/^\{([^}]*)\}$/)
+  if (!braces) return []
+  const bindings: ImportBinding[] = []
+  for (const part of braces[1].split(',')) {
+    const entry = part.trim().replace(/^type\s+/, '')
+    if (!entry) continue
+    const asMatch = entry.match(/^([\w$]+)\s+as\s+([\w$]+)$/)
+    if (asMatch) {
+      const source = asMatch[1] === 'default' ? asMatch[2] : asMatch[1]
+      bindings.push({ source, local: asMatch[2] })
+      continue
+    }
+    const name = entry.match(/^[\w$]+$/)?.[0]
+    if (name) bindings.push({ source: name, local: name })
+  }
+  return bindings
+}
+
 // Every keyword is required to stand alone: `obj.require('x')` and
 // `obj.import('x')` are method calls, not module imports (ts-morph agrees: it
 // only counts a bare `require`/`import` callee).
@@ -267,7 +298,7 @@ const IMPORT_FROM_RE =
   /(?<![.\w$])import\s+((?:type\s+)?[^'"`;()]*?)\s*from\s*(['"])([^'"\n]*)\2/g
 /** `export { a } from "x"` | `export * from "x"` | `export * as ns from "x"` */
 const EXPORT_FROM_RE =
-  /(?<![.\w$])export\s+(?:type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s*from\s*(['"])([^'"\n]*)\1/g
+  /(?<![.\w$])export\s+(?:type\s+)?(\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s*from\s*(['"])([^'"\n]*)\2/g
 /** `import "x"` (side effect) */
 const SIDE_EFFECT_RE = /(?<![.\w$])import\s*(['"])([^'"\n]*)\1/g
 /** `require("x")` — also covers TS `import x = require("x")` */
@@ -310,7 +341,9 @@ export function scanJavaScriptImports(source: string): SourceImport[] {
     push(m.index, m.index + m[0].length, m[3], parseImportClause(m[1]), true)
   }
   for (const m of text.matchAll(EXPORT_FROM_RE)) {
-    push(m.index, m.index + m[0].length, m[2], [], true)
+    // A re-export is its own use of what it forwards: there is no body below
+    // it to check, so the bindings are recorded but not judged for use.
+    push(m.index, m.index + m[0].length, m[3], parseExportClause(m[1]), false)
   }
   for (const m of text.matchAll(SIDE_EFFECT_RE)) {
     push(m.index, m.index + m[0].length, m[2], [], true)

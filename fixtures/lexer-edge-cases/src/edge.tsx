@@ -8,6 +8,8 @@ import { debounce as delay, throttle } from 'lodash-es'
 import 'side-effect-only'
 export { default as Chalk } from 'chalk'
 export * from 'next/navigation'
+export * as Nav from 'next/navigation'
+export { z as schema, type ZodType } from 'zod'
 
 const looksLikeImport = "import { fake } from 'string-import'"
 const template = `import x from 'template-import' ${'nested'} require('template-require')`

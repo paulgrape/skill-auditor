@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { describe, test } from 'node:test'
 import { buildAlignmentReport } from '../dist/diff.js'
+import { findSkillDirs } from '../dist/discoverSkills.js'
+import { buildRepoReality } from '../dist/repoReality.js'
+import { auditSkillsSafely } from '../dist/reports.js'
 import { classifySkillKind, explainLowScore, scoreSkill } from '../dist/score.js'
 import {
   FRESHNESS_PENALTY,
@@ -8,7 +12,7 @@ import {
   STUFFING_SCORE_CAP,
   SUBSTANTIATION_WEIGHTS,
 } from '../dist/taxonomy.js'
-import { makeRepo, makeSkill } from './helpers.mjs'
+import { makeRepo, makeSkill, repoRoot } from './helpers.mjs'
 
 function score(skill, repo) {
   return scoreSkill(buildAlignmentReport(skill, repo), skill, repo)
@@ -252,18 +256,77 @@ describe('explainLowScore', () => {
     assert.equal(explainLowScore(report, scored, skill), null)
   })
 
-  test('names the gap when a scored skill has no drift findings', () => {
-    // The extractor always records a package for every import specifier, so
-    // this shape only arises from hand-built input; the guard stays as the
-    // safety net behind "never a low score without a finding".
-    const skill = makeSkill({ importSpecifiers: ['left-pad/lib'] })
-    const repo = makeRepo()
-    const report = buildAlignmentReport(skill, repo)
-    const scored = scoreSkill(report, skill, repo)
-    assert.ok(scored.overall !== null && scored.overall < 70)
-    assert.deepEqual(report.findings, [])
+  test('names the dimensions when a low score has no other finding', () => {
+    // The live scorer cannot currently produce this shape (matched packages
+    // score at least ~77; unmatched ones always emit a drift finding). The
+    // guard is pinned with a constructed report so a future scoring change
+    // still has a finding an agent can act on.
+    const skill = makeSkill({
+      packages: ['next', 'zustand', 'swr', 'zod', 'vitest'],
+      substantiation: 'mention',
+    })
+    const report = {
+      skillName: skill.skillName,
+      skillPath: skill.skillPath,
+      alignmentScore: 1,
+      scorableReferenceCount: 5,
+      matchedReferenceCount: 5,
+      verifiedPackages: [],
+      findings: [],
+    }
+    const scored = {
+      kind: 'technical',
+      overall: 69,
+      grade: 'D',
+      breakdown: { alignment: 1, focus: 0.4, freshness: 1, specificity: 0 },
+      intrinsicQuality: 0,
+      intrinsicGrade: 'F',
+    }
     const finding = explainLowScore(report, scored, skill)
     assert.equal(finding?.kind, 'unscorable')
+    assert.match(finding.message, /alignment 100%, specificity 0%, focus 40%/)
+    assert.match(finding.message, /next \(mention\)/)
+  })
+
+  test('a skill whose packages all match cannot score low without a finding', () => {
+    // Alignment and freshness alone are worth 65 points; the cheapest matched
+    // reference (a bare mention in a prose-less section) still adds enough
+    // specificity to clear the threshold even with focus at its worst. (Four
+    // packages, not five: five bare mentions is metric stuffing, a finding.)
+    const packages = ['next', 'zustand', 'swr', 'zod']
+    const skill = makeSkill({
+      packages,
+      substantiation: 'mention',
+      substantiatedByProse: false,
+    })
+    const repo = makeRepo({
+      declaredDeps: Object.fromEntries(packages.map(p => [p, '1'])),
+    })
+    const report = buildAlignmentReport(skill, repo)
+    const scored = scoreSkill(report, skill, repo)
+    assert.deepEqual(report.findings, [])
+    assert.ok(scored.breakdown.focus <= 0.5)
+    assert.ok(scored.overall >= 70, `scored ${scored.overall}`)
+    assert.equal(explainLowScore(report, scored, skill), null)
+  })
+
+  test('never fires on a real skill: every low score already carries a finding', () => {
+    const skillDirs = findSkillDirs([path.join(repoRoot, 'fixtures')]).filter(
+      dir => !dir.includes('broken-skill'),
+    )
+    for (const project of ['fake-project', 'polyglot-project']) {
+      const repo = buildRepoReality(path.join(repoRoot, 'fixtures', project), { cache: false })
+      const { results, errors } = auditSkillsSafely(repo, skillDirs)
+      assert.deepEqual(errors, [])
+      for (const { skillDir, report, score } of results) {
+        if (score.overall === null || score.overall >= 70) continue
+        assert.ok(report.findings.length > 0, `${skillDir} scored ${score.overall} with no finding`)
+        assert.ok(
+          !report.findings.some(f => f.kind === 'unscorable'),
+          `${skillDir} needed the unscorable guard`,
+        )
+      }
+    }
   })
 
   test('is silent when findings already explain the score', () => {

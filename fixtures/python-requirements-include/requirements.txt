@@ -1,0 +1,5 @@
+# -r/-c includes are not followed (planned for 2.1). The packages in
+# base.txt must not appear in declaredDeps until that lands.
+-r base.txt
+-c constraints.txt
+flask>=3.0

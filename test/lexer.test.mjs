@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, test } from 'node:test'
 import {
   maskJavaScript,
+  parseExportClause,
   parseImportClause,
   scanJavaScriptImports,
 } from '../dist/ecosystems/javascript.js'
@@ -127,6 +128,35 @@ describe('scanJavaScriptImports', () => {
     assert.equal(found.clsx.bindingsKnown, false)
   })
 
+  test('re-exports record what they forward, without a body to judge for use', () => {
+    // bySpecifier keeps the last statement per specifier; read them all here.
+    const reexports = imports.filter(imp => imp.text.startsWith('export'))
+    const byText = Object.fromEntries(reexports.map(imp => [imp.text, imp]))
+    assert.deepEqual(byText["export { default as Chalk } from 'chalk'"].bindings, [
+      { source: 'Chalk', local: 'Chalk' },
+    ])
+    assert.deepEqual(byText["export * from 'next/navigation'"].bindings, [])
+    assert.deepEqual(byText["export * as Nav from 'next/navigation'"].bindings, [
+      { source: 'Nav', local: 'Nav' },
+    ])
+    assert.deepEqual(byText["export { z as schema, type ZodType } from 'zod'"].bindings, [
+      { source: 'z', local: 'schema' },
+      { source: 'ZodType', local: 'ZodType' },
+    ])
+    for (const imp of reexports) assert.equal(imp.bindingsKnown, false)
+  })
+
+  test('parseExportClause mirrors parseImportClause', () => {
+    assert.deepEqual(parseExportClause('* as ns'), [{ source: 'ns', local: 'ns' }])
+    assert.deepEqual(parseExportClause('*'), [])
+    assert.deepEqual(parseExportClause('{ a, b as c, default as D, type T }'), [
+      { source: 'a', local: 'a' },
+      { source: 'b', local: 'c' },
+      { source: 'D', local: 'D' },
+      { source: 'T', local: 'T' },
+    ])
+  })
+
   test('offsets point at the statement in the original source', () => {
     for (const imp of imports) {
       assert.equal(edgeSource.slice(imp.start, imp.end), imp.text)
@@ -204,6 +234,15 @@ describe('lexer / ts-morph parity', () => {
       assert.deepEqual(stable(lexer), stable(tsMorph))
     })
   }
+
+  test('both parsers learn the names a barrel file forwards from a package', () => {
+    const reality = buildRepoReality(path.join(repoRoot, 'fixtures/lexer-edge-cases'), {
+      cache: false,
+    })
+    assert.deepEqual([...reality.usedIdentifiers.chalk].sort(), ['Chalk'])
+    assert.deepEqual([...reality.usedIdentifiers.next].sort(), ['Nav'])
+    assert.deepEqual([...reality.usedIdentifiers.zod].sort(), ['ZodSchema', 'ZodType', 'z'])
+  })
 
   test('the scan report names the parser that produced it', () => {
     const lexer = parseJson(['scan', './fixtures/fake-project', '--no-cache'])

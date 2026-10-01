@@ -205,8 +205,13 @@ export function scoreSkill(
 /**
  * A scored skill below the threshold must never come back with an empty
  * findings list: the findings and suggestions are the only interface an
- * agent is meant to act on. When the dimensions alone dragged the score down,
- * this names the dimension and what would move it.
+ * agent is meant to act on.
+ *
+ * The extractor records a package for every import specifier, so the old
+ * "nothing to align" branch is gone — an unknown package is always an
+ * `unused-reference` (or `missing-dependency` / `category-conflict`). This
+ * stays as the safety net for a low score whose dimensions alone dragged it
+ * down (or a hand-built report), and names those dimensions.
  */
 export function explainLowScore(
   report: AlignmentReport,
@@ -223,35 +228,20 @@ export function explainLowScore(
       ? `${list.slice(0, max).join(', ')}, …`
       : list.join(', ')
   }
+  const percent = (value: number | null) => `${Math.round((value ?? 0) * 100)}%`
 
-  const location = firstPackageLocation(skill)
-
-  if (report.scorableReferenceCount === 0) {
-    const refs = sample([...skill.packages, ...skill.importSpecifiers])
-    return {
-      severity: 'info',
-      kind: 'unscorable',
-      message: `Score ${score.overall}/100 with nothing to align: none of the skill's references (${refs || 'none extracted'}) names a package the project declares or one the taxonomy knows, so alignment is unknown (${Math.round(
-        (score.breakdown.alignment ?? 0) * 100,
-      )}% prior) and specificity is 0%. Either demonstrate the project's real packages with working examples, or accept this as a package-agnostic skill.`,
-      skillReference: refs || '(no package references)',
-      location,
-    }
-  }
-
-  const specificity = score.breakdown.specificity ?? 0
   const matched = Object.values(skill.packageRefs).map(
     ref => `${ref.packageName} (${ref.substantiation})`,
   )
   return {
     severity: 'info',
     kind: 'unscorable',
-    message: `Score ${score.overall}/100 without a drift finding: alignment ${Math.round(
-      (score.breakdown.alignment ?? 0) * 100,
-    )}%, specificity ${Math.round(specificity * 100)}%, focus ${Math.round(
-      (score.breakdown.focus ?? 0) * 100,
-    )}%. The matched references (${sample(matched)}) are not demonstrated in working code that uses what it imports, so they earn little specificity.`,
-    skillReference: sample(Object.keys(skill.packageRefs)),
-    location,
+    message: `Score ${score.overall}/100 without a drift finding: alignment ${percent(
+      score.breakdown.alignment,
+    )}, specificity ${percent(score.breakdown.specificity)}, focus ${percent(
+      score.breakdown.focus,
+    )}. The matched references (${sample(matched) || 'none'}) are not demonstrated in working code that uses what it imports, so they earn little specificity.`,
+    skillReference: sample(Object.keys(skill.packageRefs)) || '(no package references)',
+    location: firstPackageLocation(skill),
   }
 }

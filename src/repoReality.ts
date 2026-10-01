@@ -137,7 +137,7 @@ function readText(file: string): string | null {
 interface Declared {
   deps: Record<string, string>
   ecosystems: Set<Ecosystem>
-  /** Go module paths declared by go.mod files: the project's own packages */
+  /** Every module path declared by a go.mod under the project: all of them are the project's own packages */
   goModules: string[]
   /** Top-level Python modules that are part of the project, not dependencies */
   pythonLocalModules: Set<string>
@@ -346,8 +346,8 @@ function scanSources(
 /**
  * The TypeScript-compiler path, kept for projects that opt into a full parse.
  * Produces the same records as the lexer: import/export specifiers, named
- * import source names, default and namespace locals, `require()` and dynamic
- * `import()` string arguments.
+ * import and re-export source names, default and namespace locals, `require()`
+ * and dynamic `import()` string arguments.
  */
 function scanJavaScriptWithTsMorph(
   projectRoot: string,
@@ -382,7 +382,18 @@ function scanJavaScriptWithTsMorph(
     }
     for (const decl of source.getExportDeclarations()) {
       const spec = decl.getModuleSpecifierValue()
-      if (spec) collector.record(topLevelPackage(spec), spec, file, 'npm', decl.getText().trim())
+      if (!spec) continue
+      const pkg = topLevelPackage(spec)
+      collector.record(pkg, spec, file, 'npm', decl.getText().trim())
+      for (const named of decl.getNamedExports()) {
+        // `default as D` has no exported name of its own; D stands in, as the
+        // lexer does and as a default import is recorded.
+        const name = named.getName()
+        const alias = named.getAliasNode()?.getText()
+        collector.recordIdentifier(pkg, name === 'default' && alias ? alias : name)
+      }
+      const namespaceExport = decl.getNamespaceExport()
+      if (namespaceExport) collector.recordIdentifier(pkg, namespaceExport.getName())
     }
     for (const call of source.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const exprText = call.getExpression().getText()
@@ -422,7 +433,7 @@ function scanRepoReality(projectRoot: string, parser: Parser): RepoReality {
   if (pyFiles > 0) present.add('python')
 
   const goFiles = scanSources(projectRoot, 'go', collector, source =>
-    scanGoImports(source, { localModule: declared.goModules[0] }),
+    scanGoImports(source, { localModules: declared.goModules }),
   )
   if (goFiles > 0) present.add('go')
 

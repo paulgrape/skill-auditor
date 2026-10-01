@@ -50,4 +50,53 @@ describe('scaffold', () => {
       fs.rmSync(out, { recursive: true, force: true })
     }
   })
+
+  test('--name picks the directory and frontmatter name; --force overwrites', () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-scaffold-name-'))
+    try {
+      const first = parseJson([
+        'scaffold',
+        'state',
+        '--project',
+        FAKE_PROJECT,
+        '--out',
+        out,
+        '--name',
+        'client-state',
+        '--json',
+      ])
+      const skillPath = path.join(out, 'client-state', 'SKILL.md')
+      assert.equal(first.written, true)
+      assert.equal(first.name, 'client-state')
+      assert.equal(path.resolve(first.skillPath), skillPath)
+      const body = fs.readFileSync(skillPath, 'utf-8')
+      assert.match(body, /^name: client-state$/m)
+      assert.match(body, /categories: state/)
+
+      fs.writeFileSync(skillPath, '# edited by hand\n')
+      const { status } = run(
+        ['scaffold', 'state', '--project', FAKE_PROJECT, '--out', out, '--name', 'client-state'],
+        { allowFail: true },
+      )
+      assert.equal(status, 1, 'without --force the edited file is kept')
+      assert.equal(fs.readFileSync(skillPath, 'utf-8'), '# edited by hand\n')
+
+      const forced = parseJson([
+        'scaffold',
+        'state',
+        '--project',
+        FAKE_PROJECT,
+        '--out',
+        out,
+        '--name',
+        'client-state',
+        '--force',
+        '--json',
+      ])
+      assert.equal(forced.written, true)
+      assert.match(fs.readFileSync(skillPath, 'utf-8'), /zustand/)
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true })
+    }
+  })
 })

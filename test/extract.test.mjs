@@ -40,6 +40,37 @@ describe('non-package specifiers', () => {
   })
 })
 
+describe('bundled references', () => {
+  const extracted = parseJson(['extract', './fixtures/references-skill'])
+
+  test('a references/*.md file is read section-aware and located by file', () => {
+    assert.deepEqual(extracted.packages, ['zustand'])
+    assert.deepEqual(extracted.importedIdentifiers.zustand, ['create'])
+    assert.equal(extracted.packageRefs.zustand.substantiation, 'usage')
+    assert.equal(extracted.packageRefs.zustand.substantiatedByProse, true)
+    assert.deepEqual(extracted.packageRefs.zustand.location, {
+      file: 'references/stores.md',
+      line: 8,
+      heading: 'Store conventions',
+    })
+    assert.equal(extracted.unusedImportCount, 0)
+  })
+
+  test('the reference file counts toward alignment and verification', () => {
+    const { results } = parseJson([
+      'audit',
+      './fixtures/references-skill',
+      '--project',
+      FAKE_PROJECT,
+      '--json',
+    ])
+    const [{ report, score }] = results
+    assert.equal(score.kind, 'mixed')
+    assert.deepEqual(report.verifiedPackages, ['zustand'])
+    assert.deepEqual(report.findings, [])
+  })
+})
+
 describe('fence languages', () => {
   const extracted = parseJson(['extract', './fixtures/non-js-skill'])
 
