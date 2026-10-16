@@ -218,6 +218,10 @@ const RULE_DESCRIPTIONS: Record<DriftFindingKind, string> = {
     'The skill references a package the project does not use and the taxonomy does not know.',
   'metric-stuffing':
     'The skill pads references to game the score; the score is capped until fixed.',
+  'stale-path':
+    'The skill cites a project file path that does not exist in the repository.',
+  'stale-command':
+    'The skill invokes a package.json script or Makefile target that the project does not define.',
   unscorable:
     'The skill scored low without any drift finding because it is not grounded in the project.',
 }

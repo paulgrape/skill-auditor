@@ -1,3 +1,5 @@
+import * as fs from 'fs'
+import * as path from 'path'
 import {
   categoriesForPackage,
   DEPRECATED_API_RULES,
@@ -278,6 +280,101 @@ function verifyIdentifiers(
   return verified
 }
 
+function repoHasFilePath(citedPath: string, repo: RepoReality): boolean {
+  const normalized = citedPath.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (repo.projectFiles?.has(normalized)) return true
+  if (repo.projectRoot) {
+    try {
+      const resolved = path.resolve(repo.projectRoot, normalized)
+      const rel = path.relative(repo.projectRoot, resolved)
+      if (
+        !rel.startsWith('..') &&
+        !path.isAbsolute(rel) &&
+        fs.existsSync(resolved)
+      ) {
+        return true
+      }
+    } catch {
+      // ignore fs errors
+    }
+  }
+  return false
+}
+
+/**
+ * Verifies relative file paths cited in the skill against the project tree,
+ * emitting a `stale-path` warning for each path that does not exist.
+ */
+function verifyPaths(
+  skill: SkillIdentifiers,
+  repo: RepoReality,
+  findings: DriftFinding[],
+): void {
+  const paths = skill.locations.paths
+  if (!paths) return
+  if (repo.projectFiles === undefined && repo.projectRoot === undefined) return
+
+  for (const citedPath of Object.keys(paths).sort()) {
+    if (repoHasFilePath(citedPath, repo)) continue
+    findings.push({
+      severity: 'warning',
+      kind: 'stale-path',
+      message: `Skill cites "${citedPath}", which does not exist in the project.`,
+      skillReference: citedPath,
+      location: paths[citedPath] ?? SKILL_WIDE_LOCATION,
+    })
+  }
+}
+
+/**
+ * Verifies `npm run <script>`, `pnpm <script>`, `yarn run <script>`,
+ * `bun run <script>`, and `make <target>` commands against `package.json#scripts`
+ * and `Makefile` targets.
+ */
+function verifyCommands(
+  skill: SkillIdentifiers,
+  repo: RepoReality,
+  findings: DriftFinding[],
+): void {
+  const commands = skill.locations.commands
+  if (!commands || commands.length === 0) return
+
+  for (const cmd of commands) {
+    if (cmd.runner === 'make') {
+      if (repo.makeTargets === undefined) continue
+      if (repo.makeTargets.has(cmd.target)) continue
+      const available = [...repo.makeTargets].sort()
+      findings.push({
+        severity: 'warning',
+        kind: 'stale-command',
+        message:
+          available.length > 0
+            ? `Skill runs "${cmd.command}", but target "${cmd.target}" is not defined in the project's Makefile (defined targets: ${available.join(', ')}).`
+            : `Skill runs "${cmd.command}", but the project has no Makefile target "${cmd.target}".`,
+        skillReference: cmd.command,
+        ...(available.length > 0 ? { repoReality: available.join(', ') } : {}),
+        location: cmd.location ?? SKILL_WIDE_LOCATION,
+      })
+      continue
+    }
+
+    if (repo.scripts === undefined) continue
+    if (repo.scripts.has(cmd.target)) continue
+    const available = [...repo.scripts].sort()
+    findings.push({
+      severity: 'warning',
+      kind: 'stale-command',
+      message:
+        available.length > 0
+          ? `Skill runs "${cmd.command}", but script "${cmd.target}" is not defined in package.json#scripts (defined scripts: ${available.join(', ')}).`
+          : `Skill runs "${cmd.command}", but package.json defines no "${cmd.target}" script.`,
+      skillReference: cmd.command,
+      ...(available.length > 0 ? { repoReality: available.join(', ') } : {}),
+      location: cmd.location ?? SKILL_WIDE_LOCATION,
+    })
+  }
+}
+
 export function buildAlignmentReport(
   skill: SkillIdentifiers,
   repo: RepoReality,
@@ -399,6 +496,8 @@ export function buildAlignmentReport(
   }
 
   const verifiedPackages = verifyIdentifiers(skill, repo, findings)
+  verifyPaths(skill, repo, findings)
+  verifyCommands(skill, repo, findings)
   findings.push(...detectMetricStuffing(skill, repo))
 
   // Zero scorable references means alignment is UNKNOWN, not perfect. A vague

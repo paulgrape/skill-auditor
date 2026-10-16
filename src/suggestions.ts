@@ -38,6 +38,14 @@ function suggestForFinding(finding: DriftFinding): string {
     case 'metric-stuffing':
       return `This looks like score optimization, not skill improvement: ${finding.message} The score is capped until this is fixed. Cut the padding and write substantive content — one concern, real repo-grounded examples, prose that explains when and why.`
 
+    case 'stale-path':
+      return `Update or remove "${finding.skillReference}" — that file path does not exist in the project. Point the skill at the real file path in the repo (check \`scan --json\` importEvidence or the project tree).`
+
+    case 'stale-command':
+      return finding.repoReality
+        ? `Replace "${finding.skillReference}" with a command the project actually defines (${finding.repoReality}), or remove the command if it no longer applies.`
+        : `Remove "${finding.skillReference}" or replace it with a script/target defined in the project's package.json or Makefile.`
+
     case 'unscorable':
       return `Nothing in this skill is wrong for the project — it is just not grounded in it. Pick the one concern the skill is about, find the package the project uses for it (\`scan --json\` usedImports and importEvidence), and add a working example that imports and uses that package's real API with a few sentences on when to apply it. If the skill is intentionally package-agnostic, leave it: a low score with no drift findings is not a defect.`
 

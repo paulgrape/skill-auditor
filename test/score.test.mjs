@@ -5,7 +5,12 @@ import { buildAlignmentReport } from '../dist/diff.js'
 import { findSkillDirs } from '../dist/discoverSkills.js'
 import { buildRepoReality } from '../dist/repoReality.js'
 import { auditSkillsSafely } from '../dist/reports.js'
-import { classifySkillKind, explainLowScore, scoreSkill } from '../dist/score.js'
+import {
+  analyzeIntrinsicQuality,
+  classifySkillKind,
+  explainLowScore,
+  scoreSkill,
+} from '../dist/score.js'
 import {
   FRESHNESS_PENALTY,
   SPECIFICITY_SATURATION,
@@ -336,5 +341,146 @@ describe('explainLowScore', () => {
     const scored = scoreSkill(report, skill, repo)
     assert.ok(report.findings.length > 0)
     assert.equal(explainLowScore(report, scored, skill), null)
+  })
+})
+
+describe('intrinsicQuality prose signals', () => {
+  test('rewards presence of a "when to use" clause in description or body', () => {
+    const withoutWhen = [
+      '---',
+      'name: style-guide',
+      'description: Formatting rules for messages.',
+      '---',
+      '',
+      '# Formatting rules',
+      '',
+      'Keep every message concise and direct across all responses in the session.',
+      '',
+      '## Rules',
+      '',
+      '- Use short sentences.',
+      '- Avoid filler words.',
+      '',
+      '```txt',
+      'Short answer example.',
+      '```',
+    ].join('\n')
+
+    const withWhen = withoutWhen.replace(
+      'description: Formatting rules for messages.',
+      'description: Formatting rules for messages. Use when drafting user replies.',
+    )
+
+    const a = analyzeIntrinsicQuality(withoutWhen)
+    const b = analyzeIntrinsicQuality(withWhen)
+    assert.equal(a.hasWhenToUse, false)
+    assert.equal(b.hasWhenToUse, true)
+    assert.equal(b.score - a.score, 15)
+  })
+
+  test('rewards step/list structure over unstructured prose', () => {
+    const unstructured = [
+      '---',
+      'name: workflow-skill',
+      'description: Release workflow instructions. Use when cutting a release.',
+      '---',
+      '',
+      '# Release workflow',
+      '',
+      'First verify the branch state and run the test suite to make sure everything passes cleanly before tagging.',
+      '',
+      '```bash',
+      'git status',
+      '```',
+    ].join('\n')
+
+    const structured = [
+      '---',
+      'name: workflow-skill',
+      'description: Release workflow instructions. Use when cutting a release.',
+      '---',
+      '',
+      '# Release workflow',
+      '',
+      'Follow these steps in order before tagging a release in the repository:',
+      '',
+      '1. Verify the working tree is clean.',
+      '2. Run the test suite and confirm zero failures.',
+      '',
+      '```bash',
+      'git status',
+      '```',
+    ].join('\n')
+
+    const a = analyzeIntrinsicQuality(unstructured)
+    const b = analyzeIntrinsicQuality(structured)
+    assert.equal(a.hasStepStructure, false)
+    assert.equal(b.hasStepStructure, true)
+    assert.ok(b.score > a.score)
+  })
+
+  test('rewards a balanced example-to-prose ratio over prose-only or code-dump skills', () => {
+    const proseOnly = [
+      '---',
+      'name: prose-only',
+      'description: Architecture rules. Use when adding modules.',
+      '---',
+      '',
+      '# Architecture rules',
+      '',
+      'Keep domain logic free of transport details and validate inputs at the boundary.',
+      '',
+      '- Validate inputs at the HTTP boundary.',
+      '- Keep domain services pure.',
+    ].join('\n')
+
+    const codeDump = [
+      '---',
+      'name: code-dump',
+      'description: Code dump. Use when copying snippets.',
+      '---',
+      '',
+      '# Dump',
+      '',
+      '- Snippet:',
+      '',
+      '```ts',
+      'export const line = "x".repeat(100);\n'.repeat(25).trim(),
+      '```',
+    ].join('\n')
+
+    const balanced = [
+      '---',
+      'name: balanced-skill',
+      'description: Architecture rules. Use when adding modules.',
+      '---',
+      '',
+      '# Architecture rules',
+      '',
+      'Keep domain logic free of transport details and validate inputs at the boundary so handlers stay thin.',
+      '',
+      '- Validate external inputs at the boundary.',
+      '- Pass typed payloads into domain functions.',
+      '',
+      '```ts',
+      'export function handle(input: string) {',
+      '  return input.trim()',
+      '}',
+      '```',
+    ].join('\n')
+
+    const proseSignals = analyzeIntrinsicQuality(proseOnly)
+    const dumpSignals = analyzeIntrinsicQuality(codeDump)
+    const balancedSignals = analyzeIntrinsicQuality(balanced)
+
+    assert.equal(proseSignals.hasExamples, false)
+    assert.equal(proseSignals.balancedExampleToProse, false)
+    assert.equal(dumpSignals.hasExamples, true)
+    assert.equal(dumpSignals.balancedExampleToProse, false)
+    assert.equal(balancedSignals.hasExamples, true)
+    assert.equal(balancedSignals.balancedExampleToProse, true)
+    assert.equal(balancedSignals.score, 100)
+    assert.ok(balancedSignals.score > proseSignals.score)
+    assert.ok(balancedSignals.score > dumpSignals.score)
   })
 })

@@ -58,7 +58,7 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
       'codeEvidence',
     ],
     description:
-      'What a SKILL.md claims: the packages, import specifiers and APIs it references, how substantiated each reference is, and where (`locations`: file and line inside the skill directory).',
+      'What a SKILL.md claims: the packages, import specifiers, APIs, file paths (`locations.paths`) and shell/manifest commands (`locations.commands`) it references, how substantiated each reference is, and where (`locations`: file and line inside the skill directory).',
     exitCodes: [OK, CRASH],
   },
   audit: {

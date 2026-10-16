@@ -72,10 +72,79 @@ const MAX_EXAMPLE_LENGTH = 200
 
 const JS_SOURCE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/
 const PY_REQUIREMENTS_RE = /^requirements.*\.txt$/
+const MAKEFILE_NAMES = new Set(['Makefile', 'makefile', 'GNUmakefile'])
+const MAKE_DIRECTIVES = new Set([
+  'ifeq',
+  'ifneq',
+  'ifdef',
+  'ifndef',
+  'else',
+  'endif',
+  'include',
+  '-include',
+  'sinclude',
+  'vpath',
+  'define',
+  'endef',
+  'undefine',
+  'export',
+  'unexport',
+  'override',
+  'private',
+])
+
+/**
+ * Extracts target names defined in a `Makefile` (including `.PHONY:` target
+ * lists and multi-target rules), ignoring variable assignments, pattern rules
+ * (`%`), directives, and special dot-targets.
+ */
+export function readMakeTargets(text: string): string[] {
+  const targets = new Set<string>()
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\\\n/g, ' ')
+
+  for (const rawLine of normalized.split('\n')) {
+    if (rawLine.startsWith('\t')) continue
+    const withoutComment = rawLine.replace(/#.*$/, '').trim()
+    if (!withoutComment) continue
+
+    const phonyMatch = withoutComment.match(/^\.PHONY\s*:\s*(.+)$/)
+    if (phonyMatch) {
+      for (const token of phonyMatch[1].trim().split(/\s+/)) {
+        if (/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(token)) {
+          targets.add(token)
+        }
+      }
+      continue
+    }
+
+    // Reject variable assignments (=, :=, ?=, +=, !=) before or at the colon.
+    const ruleMatch = withoutComment.match(/^([^:=?+!]+?)\s*::?(?![=])\s*(?:.*)?$/)
+    if (!ruleMatch) continue
+
+    const lhs = ruleMatch[1].trim()
+    if (!lhs || lhs.includes('$') || lhs.includes('%') || lhs.includes('(')) {
+      continue
+    }
+    const tokens = lhs.split(/\s+/)
+    if (tokens.some(t => MAKE_DIRECTIVES.has(t))) continue
+
+    for (const token of tokens) {
+      if (
+        !token.startsWith('.') &&
+        /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(token)
+      ) {
+        targets.add(token)
+      }
+    }
+  }
+
+  return [...targets].sort()
+}
 
 interface PartitionedTree {
   sources: Record<Ecosystem, string[]>
   manifests: Record<Ecosystem, string[]>
+  makefiles: string[]
 }
 
 function sortByDepth(projectRoot: string, files: string[]): string[] {
@@ -106,6 +175,7 @@ function partitionTree(
     go: [],
     cargo: [],
   }
+  const makefiles: string[] = []
 
   for (const file of tree.files) {
     const base = path.posix.basename(file.relativePath)
@@ -116,7 +186,9 @@ function partitionTree(
     else if (base.endsWith('.go')) sources.go.push(abs)
     else if (base.endsWith('.rs')) sources.cargo.push(abs)
 
-    if (base === 'package.json' || file.relativePath === 'pnpm-workspace.yaml') {
+    if (MAKEFILE_NAMES.has(base)) {
+      makefiles.push(abs)
+    } else if (base === 'package.json' || file.relativePath === 'pnpm-workspace.yaml') {
       manifests.npm.push(abs)
     } else if (
       base === 'pyproject.toml' ||
@@ -138,7 +210,11 @@ function partitionTree(
     manifests[eco] = sortByDepth(projectRoot, manifests[eco])
   }
 
-  return { sources, manifests }
+  return {
+    sources,
+    manifests,
+    makefiles: sortByDepth(projectRoot, makefiles),
+  }
 }
 
 function readText(file: string, tree?: WalkedProject): string | null {
@@ -171,6 +247,7 @@ interface PackageJson {
   devDependencies?: Record<string, string>
   peerDependencies?: Record<string, string>
   optionalDependencies?: Record<string, string>
+  scripts?: Record<string, string>
   workspaces?: string[] | { packages?: string[] }
 }
 
@@ -228,6 +305,8 @@ interface Declared {
   deps: Record<string, string>
   indirectDeps: Record<string, string>
   ecosystems: Set<Ecosystem>
+  scripts: Set<string>
+  makeTargets: Set<string>
   /** Every module path declared by a go.mod or replaced to a local path under the project */
   goModules: string[]
   /** Top-level Python modules that are part of the project, not dependencies */
@@ -262,10 +341,19 @@ function readDeclared(
     deps: {},
     indirectDeps: {},
     ecosystems: new Set(),
+    scripts: new Set(),
+    makeTargets: new Set(),
     goModules: [],
     pythonLocalModules: new Set(),
     cargoCrates: new Set(),
     cargoLocalCrates: new Set(),
+  }
+
+  const recordScripts = (pkg: PackageJson | null) => {
+    if (!pkg?.scripts || typeof pkg.scripts !== 'object') return
+    for (const [name, cmd] of Object.entries(pkg.scripts)) {
+      if (typeof cmd === 'string' && name) declared.scripts.add(name)
+    }
   }
 
   // npm
@@ -275,7 +363,10 @@ function readDeclared(
   if (rootPkgText !== null || fs.existsSync(rootPkgPath)) {
     declared.ecosystems.add('npm')
   }
-  if (rootPkg) mergeFirstWins(declared.deps, depsOf(rootPkg))
+  if (rootPkg) {
+    mergeFirstWins(declared.deps, depsOf(rootPkg))
+    recordScripts(rootPkg)
+  }
   const patterns = workspacePatterns(projectRoot, rootPkg, tree)
   if (patterns.length > 0) {
     const manifests = fg.sync(patterns.map(toManifestPattern), {
@@ -285,7 +376,23 @@ function readDeclared(
     })
     for (const manifest of manifests) {
       const pkg = parsePackageJson(readText(manifest, tree))
-      if (pkg) mergeFirstWins(declared.deps, depsOf(pkg))
+      if (pkg) {
+        mergeFirstWins(declared.deps, depsOf(pkg))
+        recordScripts(pkg)
+      }
+    }
+  }
+  for (const manifest of partitioned.manifests.npm) {
+    if (path.basename(manifest) !== 'package.json') continue
+    recordScripts(parsePackageJson(readText(manifest, tree)))
+  }
+
+  // Makefiles
+  for (const makefile of partitioned.makefiles) {
+    const text = readText(makefile, tree)
+    if (text === null) continue
+    for (const target of readMakeTargets(text)) {
+      declared.makeTargets.add(target)
     }
   }
 
@@ -723,6 +830,7 @@ function finalizeReality(
   declared: Declared,
   collector: UsageCollector,
   present: Set<Ecosystem>,
+  tree: WalkedProject,
 ): RepoReality {
   const hasIndirect = Object.keys(declared.indirectDeps).length > 0
   return {
@@ -732,6 +840,10 @@ function finalizeReality(
     usedIdentifiers: collector.usedIdentifiers,
     importEvidence: collector.importEvidence,
     ...(hasIndirect ? { indirectDeps: declared.indirectDeps } : {}),
+    projectRoot: tree.projectRoot,
+    projectFiles: new Set(tree.files.map(f => f.relativePath)),
+    scripts: declared.scripts,
+    makeTargets: declared.makeTargets,
   }
 }
 
@@ -807,7 +919,7 @@ function scanRepoReality(
   if (rsFiles > 0) present.add('cargo')
 
   tracker.complete()
-  return finalizeReality(declared, collector, present)
+  return finalizeReality(declared, collector, present, tree)
 }
 
 async function scanRepoRealityAsync(
@@ -887,7 +999,7 @@ async function scanRepoRealityAsync(
   if (rsFiles > 0) present.add('cargo')
 
   tracker.complete()
-  return finalizeReality(declared, collector, present)
+  return finalizeReality(declared, collector, present, tree)
 }
 
 /**

@@ -74,6 +74,10 @@ interface SerializedReality {
   usedIdentifiers: Record<string, string[]>
   importEvidence: RepoReality['importEvidence']
   indirectDeps?: Record<string, string>
+  projectRoot?: string
+  projectFiles?: string[]
+  scripts?: string[]
+  makeTargets?: string[]
 }
 
 interface SkillCacheEntry {
@@ -296,6 +300,10 @@ function revive(serialized: SerializedReality): RepoReality {
     usedIdentifiers: toSets(serialized.usedIdentifiers ?? {}),
     importEvidence: serialized.importEvidence ?? {},
     ...(serialized.indirectDeps ? { indirectDeps: serialized.indirectDeps } : {}),
+    ...(serialized.projectRoot ? { projectRoot: serialized.projectRoot } : {}),
+    ...(serialized.projectFiles ? { projectFiles: new Set(serialized.projectFiles) } : {}),
+    ...(serialized.scripts ? { scripts: new Set(serialized.scripts) } : {}),
+    ...(serialized.makeTargets ? { makeTargets: new Set(serialized.makeTargets) } : {}),
   }
 }
 
@@ -432,6 +440,8 @@ function reviveSkill(
       importSpecifiers: { ...(serialized.locations?.importSpecifiers ?? {}) },
       apiCalls: { ...(serialized.locations?.apiCalls ?? {}) },
       unusedImports: [...(serialized.locations?.unusedImports ?? [])],
+      paths: { ...(serialized.locations?.paths ?? {}) },
+      commands: [...(serialized.locations?.commands ?? [])],
     },
     codeEvidence: {
       codeFences: serialized.codeEvidence?.codeFences ?? 0,

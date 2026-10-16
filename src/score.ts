@@ -123,26 +123,134 @@ function toGrade(score: number): string {
   return 'F'
 }
 
-/** Scores writing quality from SKILL.md structure — used for neutral/mixed skills. */
+/**
+ * Heuristic writing-quality signals derived from a SKILL.md document without
+ * a language model. These heuristics are intentionally non-configurable.
+ */
+export interface IntrinsicQualitySignals {
+  /** Frontmatter declares a non-empty `name` */
+  hasName: boolean
+  /** Frontmatter declares a non-empty `description` */
+  hasDescription: boolean
+  /** Body contains markdown section headings (`#`..`###`) outside code fences */
+  hasHeadings: boolean
+  /** Document length is within a readable 100..10,000 character window */
+  reasonableLength: boolean
+  /** Frontmatter `description` or body prose/headings include a "when to use" trigger clause */
+  hasWhenToUse: boolean
+  /** Body organizes guidance into numbered steps, bullet lists, or step headings */
+  hasStepStructure: boolean
+  /** Body contains concrete examples (fenced code blocks or blockquote examples) */
+  hasExamples: boolean
+  /** Share of body content characters that are explanatory prose vs examples (0..1) */
+  proseRatio: number
+  /** True when the body pairs examples with sufficient explanatory prose (15%..95% prose share and >= 15 prose words) */
+  balancedExampleToProse: boolean
+  /** Total intrinsic quality score (0..100) */
+  score: number
+}
+
+const WHEN_CLAUSE_IN_DESC_RE = /\b(?:when|use\s+for|trigger)\b/i
+const WHEN_HEADING_RE = /^#{1,4}\s+.*\bwhen\b/im
+const WHEN_PROSE_RE =
+  /\b(?:when\s+(?:to|you|the\s+user|adding|creating|building|editing|auditing|running|writing)|use\s+(?:this\s+skill\s+)?when|reach\s+for\s+this\s+skill\s+when|follow\s+[^\n]*\bwhen\b)/i
+
+/**
+ * Evaluates deterministic structure and prose-quality heuristics on raw
+ * `SKILL.md` markdown content.
+ */
+export function analyzeIntrinsicQuality(
+  rawMarkdown: string,
+): IntrinsicQualitySignals {
+  const raw = rawMarkdown.replace(/\r\n/g, '\n')
+  const { data: frontmatter, body } = parseFrontmatter(raw)
+
+  const hasName = Boolean(frontmatterString(frontmatter, 'name'))
+  const description = frontmatterString(frontmatter, 'description') ?? ''
+  const hasDescription = Boolean(description)
+
+  const fences: string[] = []
+  const bodyWithoutFences = body.replace(
+    /```[\w-]*[^\n]*\n([\s\S]*?)```/g,
+    (_m, code: string) => {
+      fences.push(code)
+      return '\n'
+    },
+  )
+
+  const hasHeadings = /^#{1,3}\s+.+/m.test(bodyWithoutFences)
+  const reasonableLength = raw.length >= 100 && raw.length <= 10000
+
+  const hasWhenToUse =
+    WHEN_CLAUSE_IN_DESC_RE.test(description) ||
+    WHEN_HEADING_RE.test(bodyWithoutFences) ||
+    WHEN_PROSE_RE.test(bodyWithoutFences)
+
+  const numberedItems = bodyWithoutFences.match(/^\s*\d+\.\s+.+/gm) ?? []
+  const bulletItems = bodyWithoutFences.match(/^\s*[-*]\s+.+/gm) ?? []
+  const stepHeadings = bodyWithoutFences.match(/^#{1,4}\s+step\b.+/gim) ?? []
+  const allHeadings = bodyWithoutFences.match(/^#{1,4}\s+.+/gm) ?? []
+  const stepItemCount =
+    numberedItems.length + bulletItems.length + stepHeadings.length
+  const hasStepStructure = stepItemCount >= 1
+  const hasMultiStepDepth = stepItemCount >= 2 || allHeadings.length >= 2
+
+  const blockquotes = bodyWithoutFences.match(/^\s*>\s+.+/gm) ?? []
+  const hasExamples = fences.length > 0 || blockquotes.length > 0
+
+  const exampleChars =
+    fences.reduce((sum, code) => sum + code.trim().length, 0) +
+    blockquotes.reduce(
+      (sum, line) => sum + line.replace(/^\s*>\s*/, '').trim().length,
+      0,
+    )
+  const proseOnly = bodyWithoutFences
+    .replace(/^\s*>\s+.*$/gm, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .trim()
+  const proseWords = proseOnly.split(/\s+/).filter(w => /\w/.test(w)).length
+  const proseChars = proseOnly.length
+  const totalContentChars = proseChars + exampleChars
+  const proseRatio =
+    totalContentChars > 0 ? proseChars / totalContentChars : 0
+  const balancedExampleToProse =
+    hasExamples &&
+    proseWords >= 15 &&
+    proseRatio >= 0.15 &&
+    proseRatio <= 0.95
+
+  let score = 0
+  if (hasName) score += 15
+  if (hasDescription) score += 15
+  if (hasHeadings) score += 15
+  if (reasonableLength) score += 10
+  if (hasWhenToUse) score += 15
+  if (hasStepStructure) score += 10
+  if (hasMultiStepDepth) score += 5
+  if (hasExamples) score += 10
+  if (balancedExampleToProse) score += 5
+
+  return {
+    hasName,
+    hasDescription,
+    hasHeadings,
+    reasonableLength,
+    hasWhenToUse,
+    hasStepStructure,
+    hasExamples,
+    proseRatio,
+    balancedExampleToProse,
+    score,
+  }
+}
+
+/** Scores writing quality from SKILL.md structure and prose heuristics — used for neutral/mixed skills. */
 export function scoreIntrinsicQuality(skillDir: string): number {
   const skillMdPath = path.join(skillDir, 'SKILL.md')
   if (!fs.existsSync(skillMdPath)) return 0
 
-  const raw = fs.readFileSync(skillMdPath, 'utf-8').replace(/\r\n/g, '\n')
-  const { data: frontmatter } = parseFrontmatter(raw)
-  let score = 0
-
-  // Scoped to frontmatter: `name:`/`description:` lines in the body (commonly
-  // inside example blocks) describe something else, not this skill.
-  if (frontmatterString(frontmatter, 'name')) score += 20
-  if (frontmatterString(frontmatter, 'description')) score += 20
-  if (/^#{1,3}\s+.+/m.test(raw)) score += 15
-  if (/```[\w-]*\n[\s\S]*?```/.test(raw)) score += 20
-  if (raw.length >= 100 && raw.length <= 10000) score += 15
-  if (/^[\s]*[-*]\s+.+/m.test(raw) || /^[\s]*\d+\.\s+.+/m.test(raw))
-    score += 10
-
-  return score
+  const raw = fs.readFileSync(skillMdPath, 'utf-8')
+  return analyzeIntrinsicQuality(raw).score
 }
 
 export function scoreSkill(
