@@ -5,11 +5,15 @@ import { envelope } from './envelope.js'
 import { detectGaps } from './gaps.js'
 import {
   buildRepoReality,
+  buildRepoRealityAsync,
   resolveParser,
   type BuildRepoRealityOptions,
 } from './repoReality.js'
 import { explainLowScore, scoreSkill } from './score.js'
-import { extractSkillIdentifiers } from './skillIdentifiers.js'
+import {
+  extractSkillIdentifiers,
+  type ExtractSkillOptions,
+} from './skillIdentifiers.js'
 import { buildSuggestions } from './suggestions.js'
 import type {
   AlignmentReport,
@@ -33,8 +37,12 @@ export interface AuditError {
 }
 
 /** Audits one skill directory against an already-built repo reality. */
-export function auditSkill(repo: RepoReality, skillDir: string): AuditResult {
-  const skill = extractSkillIdentifiers(skillDir)
+export function auditSkill(
+  repo: RepoReality,
+  skillDir: string,
+  options?: ExtractSkillOptions,
+): AuditResult {
+  const skill = extractSkillIdentifiers(skillDir, options)
   const report = buildAlignmentReport(skill, repo)
   const score = scoreSkill(report, skill, repo)
   const explanation = explainLowScore(report, score, skill)
@@ -51,8 +59,9 @@ export function auditSkill(repo: RepoReality, skillDir: string): AuditResult {
 export function auditSkills(
   repo: RepoReality,
   skillDirs: string[],
+  options?: ExtractSkillOptions,
 ): AuditResult[] {
-  return skillDirs.map(skillDir => auditSkill(repo, skillDir))
+  return skillDirs.map(skillDir => auditSkill(repo, skillDir, options))
 }
 
 /**
@@ -63,12 +72,13 @@ export function auditSkills(
 export function auditSkillsSafely(
   repo: RepoReality,
   skillDirs: string[],
+  options?: ExtractSkillOptions,
 ): { results: AuditResult[]; errors: AuditError[] } {
   const results: AuditResult[] = []
   const errors: AuditError[] = []
   for (const skillDir of skillDirs) {
     try {
-      results.push(auditSkill(repo, skillDir))
+      results.push(auditSkill(repo, skillDir, options))
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       errors.push({ skillDir, error })
@@ -88,6 +98,23 @@ export function scanReport(
 ) {
   const loaded = prepareProject(projectRoot)
   const reality = buildRepoReality(projectRoot, options)
+  return envelope({
+    ecosystems: reality.ecosystems,
+    declaredDeps: reality.declaredDeps,
+    usedImports: reality.usedImports,
+    usedIdentifiers: reality.usedIdentifiers,
+    importEvidence: reality.importEvidence,
+    parser: resolveParser(options.parser),
+    config: describeConfig(loaded),
+  })
+}
+
+export async function scanReportAsync(
+  projectRoot: string,
+  options: BuildRepoRealityOptions = {},
+) {
+  const loaded = prepareProject(projectRoot)
+  const reality = await buildRepoRealityAsync(projectRoot, options)
   return envelope({
     ecosystems: reality.ecosystems,
     declaredDeps: reality.declaredDeps,
@@ -123,7 +150,22 @@ export function gapsReport(
   const skillDirs = findSkillDirs(skillRoots)
   return envelope({
     skillDirs,
-    ...detectGaps(repo, skillRoots, checklistKey),
+    ...detectGaps(repo, skillRoots, checklistKey, { cache: options.cache }),
+  })
+}
+
+export async function gapsReportAsync(
+  skillRoots: string[],
+  projectRoot: string,
+  checklistKey?: string,
+  options: BuildRepoRealityOptions = {},
+) {
+  prepareProject(projectRoot)
+  const repo = await buildRepoRealityAsync(projectRoot, options)
+  const skillDirs = findSkillDirs(skillRoots)
+  return envelope({
+    skillDirs,
+    ...detectGaps(repo, skillRoots, checklistKey, { cache: options.cache }),
   })
 }
 

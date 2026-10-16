@@ -139,7 +139,7 @@ const COMMAND_OUTPUT: Record<string, CommandOutput> = {
     alwaysJson: false,
     fields: ['skillDir', 'skillPath', 'name', 'category', 'written', 'contents'],
     description:
-      'A SKILL.md generated from the project\'s import evidence for one category. `written` is false under --dry-run.',
+      'A SKILL.md generated from the project\'s import evidence for one category. `written` is false under --dry-run (the CLI writes by default unless --dry-run is passed; the MCP `scaffold` tool defaults `dryRun` to true).',
     exitCodes: [OK, CRASH, USAGE_ERROR],
   },
   compare: {

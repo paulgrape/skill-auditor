@@ -1,12 +1,28 @@
 /**
  * Programmatic entry point: the same analysis the CLI runs, as functions.
  *
- * The pipeline is buildRepoReality (what the project is) plus
- * extractSkillIdentifiers (what the skill claims), compared by
+ * The pipeline is buildRepoRealityAsync / buildRepoReality (what the project
+ * is) plus extractSkillIdentifiers (what the skill claims), compared by
  * buildAlignmentReport and graded by scoreSkill. auditSkills wires those
  * together; the *Report helpers return the versioned JSON envelopes the CLI
  * and the MCP server emit.
  */
+export {
+  clearRealityCache,
+  clearSkillCache,
+  CONTENT_HASH_MAX_BYTES,
+  DEFAULT_CONCURRENCY,
+  fingerprintProject,
+  fingerprintProjectAsync,
+  fingerprintSkill,
+  mapConcurrent,
+  walkProject,
+  walkProjectAsync,
+  walkSkill,
+  type WalkedFile,
+  type WalkedProject,
+  type WalkedSkill,
+} from './cache.js'
 export { buildAlignmentReport } from './diff.js'
 export {
   defaultSkillRoots,
@@ -26,10 +42,12 @@ export {
 export { detectGaps, requireChecklist } from './gaps.js'
 export {
   buildRepoReality,
+  buildRepoRealityAsync,
   PARSERS,
   resolveParser,
   type BuildRepoRealityOptions,
   type Parser,
+  type ScanProgress,
 } from './repoReality.js'
 export {
   readGoMod,
@@ -62,14 +80,19 @@ export {
   auditSkills,
   auditSkillsSafely,
   gapsReport,
+  gapsReportAsync,
   scanReport,
+  scanReportAsync,
   validateReport,
   type AuditError,
   type AuditResult,
 } from './reports.js'
 export { scaffoldSkill } from './scaffold.js'
 export { scoreSkill } from './score.js'
-export { extractSkillIdentifiers } from './skillIdentifiers.js'
+export {
+  extractSkillIdentifiers,
+  type ExtractSkillOptions,
+} from './skillIdentifiers.js'
 export { runSpecCompliance } from './specCompliance.js'
 export { buildSuggestions } from './suggestions.js'
 export {

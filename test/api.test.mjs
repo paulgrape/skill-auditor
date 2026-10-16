@@ -8,6 +8,7 @@ import {
   auditSkillsSafely,
   buildAlignmentReport,
   buildRepoReality,
+  buildRepoRealityAsync,
   detectGaps,
   extractSkillIdentifiers,
   findSkillDirs,
@@ -114,5 +115,20 @@ describe('programmatic api', () => {
     })
     assert.equal(drafted.written, false)
     assert.match(drafted.contents, /next\/navigation/)
+  })
+
+  test('buildRepoRealityAsync produces the exact same RepoReality as buildRepoReality and reports progress', async () => {
+    const syncRepo = buildRepoReality(project, { cache: false })
+    const phases = []
+    const asyncRepo = await buildRepoRealityAsync(project, {
+      cache: false,
+      concurrency: 4,
+      onProgress(p) {
+        phases.push(p.phase)
+      },
+    })
+    assert.deepEqual(asyncRepo, syncRepo)
+    assert.equal(phases[0], 'walk')
+    assert.equal(phases.at(-1), 'complete')
   })
 })

@@ -20,7 +20,7 @@ import {
 import { requireChecklist } from './gaps.js'
 import { runMcpServer } from './mcp.js'
 import {
-  buildRepoReality,
+  buildRepoRealityAsync,
   PARSERS,
   resolveParser,
   type BuildRepoRealityOptions,
@@ -28,8 +28,8 @@ import {
 import {
   auditReport,
   auditSkillsSafely,
-  gapsReport,
-  scanReport,
+  gapsReportAsync,
+  scanReportAsync,
   validateReport,
   type AuditError,
   type AuditResult,
@@ -253,10 +253,10 @@ addRealityOptions(
     .description(
       'Print the RepoReality (ecosystems, declared deps, used imports) as JSON',
     ),
-).action((path: string, opts: RealityOptions) => {
+).action(async (path: string, opts: RealityOptions) => {
   const options = realityOptions(opts)
   loadProject(path)
-  printJson(scanReport(path, options))
+  printJson(await scanReportAsync(path, options))
 })
 
 program
@@ -267,7 +267,7 @@ program
     printJson(envelope(extractSkillIdentifiers(skillDir)))
   })
 
-function auditAction(
+async function auditAction(
   skillDirs: string[],
   opts: {
     project: string
@@ -278,14 +278,16 @@ function auditAction(
     baseline?: string
     failOnRegression?: boolean
   } & RealityOptions,
-): never {
+): Promise<never> {
   const failOn = parseFailOn(opts.failOn)
   const minScore = parseMinScore(opts.minScore)
   const format = resolveFormat(opts)
   const options = realityOptions(opts)
   loadProject(opts.project)
-  const repo = buildRepoReality(opts.project, options)
-  const { results, errors } = auditSkillsSafely(repo, skillDirs)
+  const repo = await buildRepoRealityAsync(opts.project, options)
+  const { results, errors } = auditSkillsSafely(repo, skillDirs, {
+    cache: options.cache,
+  })
   let comparison
   if (opts.baseline) {
     try {
@@ -330,8 +332,8 @@ addRealityOptions(
       )
       .description('Audit a skill or all skills under a root against the project'),
   ),
-).action((inputPath: string, opts) => {
-  auditAction(resolveSkillPath(inputPath), opts)
+).action(async (inputPath: string, opts) => {
+  await auditAction(resolveSkillPath(inputPath), opts)
 })
 
 program
@@ -381,8 +383,8 @@ addRealityOptions(
       )
       .description('Audit every skill found under the given roots'),
   ),
-).action((roots: string[], opts) => {
-  auditAction(findSkillDirs(resolveRoots(roots, opts)), opts)
+).action(async (roots: string[], opts) => {
+  await auditAction(findSkillDirs(resolveRoots(roots, opts)), opts)
 })
 
 addRealityOptions(
@@ -402,7 +404,7 @@ addRealityOptions(
     .option('--json', 'emit machine-readable JSON')
     .description('Detect uncovered stack categories and checklist gaps'),
 ).action(
-    (
+    async (
       roots: string[],
       opts: {
         project: string
@@ -415,7 +417,7 @@ addRealityOptions(
       const options = realityOptions(opts)
       loadProject(opts.project)
       const checklist = parseChecklist(opts.checklist)
-      const gapReport = gapsReport(
+      const gapReport = await gapsReportAsync(
         resolveRoots(roots, opts),
         opts.project,
         checklist,
@@ -562,13 +564,16 @@ addRealityOptions(
     .option('-o, --out <dir>', 'directory to write the skill into', '.')
     .option('--name <name>', 'skill directory name (defaults to the category)')
     .option('--force', 'overwrite an existing SKILL.md')
-    .option('--dry-run', 'print the generated SKILL.md without writing it')
+    .option(
+      '--dry-run',
+      'print the generated SKILL.md without writing it (default false in CLI; true in MCP)',
+    )
     .option('--json', 'emit machine-readable JSON')
     .description(
       'Generate a SKILL.md for one category from the project\'s real import evidence',
     ),
 ).action(
-    (
+    async (
       category: string,
       opts: {
         project: string
@@ -581,7 +586,7 @@ addRealityOptions(
     ) => {
       const options = realityOptions(opts)
       loadProject(opts.project)
-      const repo = buildRepoReality(opts.project, options)
+      const repo = await buildRepoRealityAsync(opts.project, options)
       const result = scaffoldSkill({
         category,
         repo,
@@ -649,10 +654,8 @@ program
     runMcpServer({ confine: Boolean(opts.confine) })
   })
 
-try {
-  program.parse(process.argv)
-} catch (err) {
+program.parseAsync(process.argv).catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err)
   process.stderr.write(`Error: ${message}\n`)
   process.exit(1)
-}
+})
