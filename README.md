@@ -25,33 +25,34 @@ Skills are the memory an agent brings to your codebase. When they drift from rea
 
 | Ecosystem | Declared by | Used by |
 |-----------|-------------|---------|
-| **npm** | `package.json` (`dependencies`, `devDependencies`, `peerDependencies`), merged across npm/yarn `workspaces` and `pnpm-workspace.yaml` packages | `import`/`export … from`, side-effect imports, `require()`, dynamic `import()` in `.ts .tsx .js .jsx .mjs .cjs .mts .cts` |
-| **Python** | `pyproject.toml` (PEP 621 `dependencies`, optional groups, `dependency-groups`, Poetry and PDM tables), `requirements*.txt` | `import x`, `from x import y` in `.py` — names PEP 503-normalized |
-| **Go** | `go.mod` direct `require` entries (indirect ones are not the stack) | `import` declarations in `.go`, reduced to the module (`github.com/owner/repo`, major-version suffix folded) |
-| **Cargo** | `Cargo.toml` (`dependencies`, `dev-`, `build-`, target-specific and `workspace.dependencies`) | `use`, `extern crate` and bare `crate::path` usage in `.rs` — hyphens normalized to `_` |
+| **npm** | `package.json` (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`), merged across npm/yarn `workspaces` and `pnpm-workspace.yaml` packages | `import`/`export … from`, side-effect imports, `require()`, dynamic `import()` (including `npm:` / `jsr:` specifiers) in `.ts .tsx .js .jsx .mjs .cjs .mts .cts` |
+| **Python** | `pyproject.toml` (PEP 621 `dependencies`, optional groups, `dependency-groups`, Poetry and PDM tables), `requirements*.txt` (following `-r`/`-c` includes), `Pipfile`, `setup.cfg`, `setup.py` | `import x`, `from x import y` in `.py` — names PEP 503-normalized and mapped via `PYTHON_IMPORT_TO_DIST` (`sklearn` → `scikit-learn`, `PIL` → `pillow`, `yaml` → `pyyaml`, …) |
+| **Go** | `go.mod` direct `require` entries and `go.work` workspaces (local `replace` targets and workspace modules treated as local; `// indirect` requires tracked separately) | `import` declarations in `.go`, reduced to the module (`github.com/owner/repo`, major-version suffix folded) |
+| **Cargo** | `Cargo.toml` (`dependencies`, `dev-`, `build-`, target-specific and `workspace.dependencies`; workspace members, `{ path = "…" }` deps and `[patch]`/`[replace]` excluded) | `use`, `extern crate` and bare `crate::path` usage in `.rs` — hyphens normalized to `_` |
 
-**Frontend web apps (JS/TS)** remain the core of the *taxonomy*: categories, checklists, conflict detection and gap coverage know the React/Next.js ecosystem best. Python, Go and Rust packages are audited for alignment (declared, used, verified identifiers) without a category unless you add one in `.skill-auditor.json`.
+**Frontend and backend taxonomies** ship out of the box across JS/TS, Python, Go, and Rust:
 
 | Area | What is checked |
 |------|-----------------|
 | **Languages** | JavaScript, TypeScript, Python, Go, Rust |
-| **Frameworks** | React ecosystem; **Next.js** (including Pages Router → App Router drift detection) |
-| **Routing** | `next`, `react-router`, `@tanstack/react-router`, `wouter`, … |
-| **State** | `zustand`, `redux`, `jotai`, `recoil`, `mobx`, `valtio`, … |
-| **Data fetching** | `swr`, `@tanstack/react-query`, Apollo, `urql`, … |
-| **Forms & validation** | `react-hook-form`, `formik`, `zod`, `yup`, `valibot`, … |
-| **Styling** | `tailwindcss`, `styled-components`, Emotion, Sass, `vanilla-extract`, … |
-| **Testing** | `vitest`, `jest`, Testing Library, Cypress, Playwright |
-| **ORM / DB** | `drizzle-orm`, `prisma`, `typeorm`, `kysely`, … (detected when present) |
-| **Component libs** | Radix, MUI, Ant Design, Chakra, shadcn, … |
+| **Web frameworks** | `fastapi`, `django`, `flask`, `starlette`, `gin`, `echo`, `fiber`, `chi`, `axum`, `actix_web`, `rocket`, `warp`, … |
+| **Frontend frameworks & routing** | React, Next.js (Pages Router → App Router drift), `react-router`, `@tanstack/react-router`, `wouter`, Vue, Svelte, Astro, Remix, … |
+| **State & data fetching** | `zustand`, `redux`, `jotai`, `mobx`, `swr`, `@tanstack/react-query`, Apollo, `urql`, … |
+| **HTTP clients & queues** | `httpx`, `aiohttp`, `requests`, `reqwest`, `resty`, `celery`, `rq`, `dramatiq`, `asynq`, `tokio`, … |
+| **Validation & serialization** | `zod`, `yup`, `valibot`, `pydantic` (including v1 → v2 drift), `marshmallow`, `attrs`, `validator`, `serde`, `serde_json`, … |
+| **ORM / DB** | `drizzle-orm`, `prisma`, `typeorm`, `kysely`, `sqlalchemy` (1.x `Query` → 2.0 `select()`), `sqlmodel`, `psycopg`, `asyncpg`, `gorm`, `sqlx`, `pgx`, `sea_orm`, `diesel`, … |
+| **Logging, CLI & config** | `structlog`, `loguru`, `zap`, `zerolog`, `tracing`, `click`, `typer`, `cobra`, `clap` (`structopt` drift), `python-dotenv`, `pydantic-settings`, `viper`, `figment`, … |
+| **Styling & UI** | `tailwindcss`, `styled-components`, Emotion, Sass, `vanilla-extract`, Radix, MUI, Ant Design, Chakra, shadcn, … |
+| **Testing** | `vitest`, `jest`, Testing Library, Cypress, Playwright, `pytest`, `hypothesis`, `testify`, `proptest`, `rstest`, … |
 
 **Checklists:**
 
-- `--checklist frontend` — must-have stack categories: routing, state, data-fetching, validation, styling, testing
+- `--checklist frontend` — must-have frontend stack categories: routing, state, data-fetching, validation, styling, testing
+- `--checklist backend` — must-have backend stack categories: web-framework, orm-db, validation, testing, logging
 - `--checklist website` — [Website Specification](https://specification.website) domains (foundations, SEO, accessibility, security, performance, privacy, resilience, i18n, agent-readiness)
 - `spec-check` — static compliance scan for HTML head, public assets, header config, routes (opt-in)
 
-**Skill kinds:** a skill's kind is decided by its package references alone. Technical skills (more than three package references) and mixed skills (one to three) get full alignment scoring; **procedural** skills (package references, but the only fenced code is shell) and **neutral** skills (no package references) get intrinsic quality only — they are not alignment-scored. API-call-shaped identifiers (`readFileSync(`) never make a skill technical on their own; they are still extracted and verified against the repo's imports for `unverified-api` findings. Fenced blocks tagged `js`/`ts`/`jsx`/`tsx` (and untagged ones), `python`, `go` and `rust` are read with the same import scanners the project scan uses; CSS, HTML, shell and other fences are treated as prose. Bundled `scripts/` and `references/` files are read by extension the same way.
+**Skill kinds:** a skill's kind is decided by its package references alone. Technical skills (more than three package references) and mixed skills (one to three) get full alignment scoring; **procedural** skills (package references, but the only fenced code is shell) and **neutral** skills (no package references) get intrinsic quality only — they are not alignment-scored. API-call-shaped identifiers (`readFileSync(`) never make a skill technical on their own; they are still extracted from JS/TS, Python, Go, and Rust fences and verified against the repo's imports and deprecation rules. Fenced blocks tagged `js`/`ts`/`jsx`/`tsx` (and untagged ones), `python`, `go` and `rust` are read with the same import scanners the project scan uses; CSS, HTML, shell and other fences are treated as prose. Bundled `scripts/` and `references/` files are read by extension the same way.
 
 ### Parsers
 
@@ -66,12 +67,11 @@ Both parsers produce the same ground truth on the test fixtures (see `test/lexer
 
 ### Planned
 
-- **Prose analysis** — score and improve the natural-language parts of skills (clarity, structure, actionability), not just code references
-- **Backend taxonomy** — categories for Python/Go/Rust web frameworks, ORMs, queues and service patterns, so backend skills get focus and gap coverage too
-- **System & DevOps** — infra, CI/CD, containers, observability, deployment targets
-- **Data science** — notebooks, ML libraries, pipelines, and experiment tooling
+- **Prose analysis & broken path detection** — verify project-relative file paths in `SKILL.md`, score natural-language structure, and detect cross-skill overlap
+- **CI & watch mode** — composite GitHub Action, incremental file-level cache, and `skill-auditor watch`
+- **Data science & DevOps** — `.ipynb` notebook scanning, ML/dataframe taxonomy, and infrastructure/observability categories
 
-The package taxonomy already includes Vue, Svelte, Astro and Remix alongside the React/Next.js core. A package can belong to several categories — `@reduxjs/toolkit` is both state and data-fetching — and counts toward each of them for focus, conflict detection, and gap coverage.
+The package taxonomy includes React/Next.js, Vue, Svelte, Astro, Remix, FastAPI, Django, Flask, Gin, Echo, Fiber, Chi, Axum, Actix, SQLAlchemy, GORM, SQLx, SeaORM, Diesel, Pydantic, Serde, Tokio, Celery, and more. A package can belong to several categories — `@reduxjs/toolkit` is both state and data-fetching — and taxonomy entries can optionally be prefixed with an ecosystem (`python:redis`, `npm:redis`) to disambiguate collisions.
 
 Contributions to the taxonomy ([`src/taxonomyData.ts`](src/taxonomyData.ts)) are welcome via PR.
 
@@ -150,9 +150,10 @@ skill-auditor gaps .cursor/skills --project . --checklist frontend --fail-on-gap
 
 Pass a skills root — scans recursively for every `SKILL.md` in nested dirs (defaults to the current directory). Use `--fail-on-gap` to exit non-zero when any gap is found (CI-friendly). An unknown `--checklist` key exits `2`.
 
-Two must-have checklists ship today:
+Three must-have checklists ship today:
 
-- `--checklist frontend` — stack categories derived from npm packages (routing, state, data-fetching, validation, styling, testing).
+- `--checklist frontend` — frontend stack categories derived from npm packages (routing, state, data-fetching, validation, styling, testing).
+- `--checklist backend` — backend service categories across Python, Go, Rust, and Node (`web-framework`, `orm-db`, `validation`, `testing`, `logging`).
 - `--checklist website` — Website Specification domains (foundations, seo, accessibility, security, performance, privacy, resilience, i18n, agent-readiness). A skill covers a domain by declaring it in `metadata.categories`:
 
 ```yaml
@@ -320,6 +321,7 @@ for (const { report, score } of results) {
 Bundled under `templates/` (reference skills, not auto-installed by `npx skills add`):
 
 - `templates/frontend-must-have/` — checklist skill for modern React/Next.js stacks
+- `templates/backend-must-have/` — checklist skill for backend services across Python, Go, and Rust (`web-framework`, `orm-db`, `validation`, `logging`, `testing`)
 - `templates/website-*/` — one reference skill per Website Specification domain (foundations, seo, accessibility, security, performance, privacy, resilience, i18n, agent-readiness), each declaring `metadata.categories` so it counts toward `--checklist website` coverage
 
 Point any command at them, e.g. `skill-auditor audit ./templates/frontend-must-have --project .`.

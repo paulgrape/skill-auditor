@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { buildAlignmentReport } from '../dist/diff.js'
+import { buildSuggestions } from '../dist/suggestions.js'
+import { categoriesForPackage, configureTaxonomy, MUST_HAVE_CHECKLISTS } from '../dist/taxonomy.js'
 import { makeRepo, makeSkill } from './helpers.mjs'
 
 describe('category findings', () => {
@@ -149,5 +151,123 @@ describe('identifier verification', () => {
     const unverified = report.findings.filter(f => f.kind === 'unverified-api')
     assert.equal(unverified.length, 1)
     assert.equal(unverified[0].repoReality, 'useRouter')
+  })
+})
+
+describe('backend taxonomy, ecosystem-qualified keys, and polyglot deprecations', () => {
+  test('exposes the built-in backend checklist and backend categories across Python, Go, and Rust', () => {
+    assert.deepEqual(MUST_HAVE_CHECKLISTS.backend, [
+      'web-framework',
+      'orm-db',
+      'validation',
+      'testing',
+      'logging',
+    ])
+    assert.deepEqual(categoriesForPackage('fastapi'), ['web-framework'])
+    assert.deepEqual(categoriesForPackage('github.com/gin-gonic/gin'), ['web-framework'])
+    assert.deepEqual(categoriesForPackage('axum'), ['web-framework'])
+    assert.deepEqual(categoriesForPackage('celery'), ['task-queue'])
+    assert.deepEqual(categoriesForPackage('structlog'), ['logging'])
+  })
+
+  test('supports ecosystem-qualified taxonomy keys (ecosystem:name)', () => {
+    configureTaxonomy({
+      taxonomy: {
+        'task-queue': ['python:redis'],
+        'orm-db': ['npm:redis'],
+      },
+      checklists: {},
+      ignore: [],
+    })
+    try {
+      assert.deepEqual(categoriesForPackage('redis', ['python']), ['task-queue'])
+      assert.deepEqual(categoriesForPackage('redis', ['npm']), ['orm-db'])
+    } finally {
+      configureTaxonomy()
+    }
+  })
+
+  test('flags Go, Rust, and Python deprecated APIs (Tier 1 & Tier 2)', () => {
+    // Go: io/ioutil and github.com/pkg/errors
+    const goReport = buildAlignmentReport(
+      makeSkill({
+        packages: ['github.com/pkg/errors'],
+        importSpecifiers: ['io/ioutil', 'github.com/pkg/errors'],
+      }),
+      makeRepo({
+        ecosystems: ['go'],
+        declaredDeps: { 'github.com/gin-gonic/gin': 'v1.9.1' },
+      }),
+    )
+    const goDeprecated = goReport.findings
+      .filter(f => f.kind === 'deprecated-api')
+      .map(f => f.skillReference)
+    assert.ok(goDeprecated.includes('io/ioutil'))
+    assert.ok(goDeprecated.includes('github.com/pkg/errors'))
+
+    // Rust: failure, structopt, async-std, lazy_static
+    const rustReport = buildAlignmentReport(
+      makeSkill({
+        packages: ['failure', 'structopt', 'async_std', 'lazy_static'],
+        importSpecifiers: ['failure', 'structopt', 'async_std', 'lazy_static'],
+      }),
+      makeRepo({
+        ecosystems: ['cargo'],
+        declaredDeps: { tokio: '1', clap: '4', thiserror: '1' },
+      }),
+    )
+    const rustDeprecated = rustReport.findings
+      .filter(f => f.kind === 'deprecated-api')
+      .map(f => f.skillReference)
+    for (const ref of ['failure', 'structopt', 'async_std', 'lazy_static']) {
+      assert.ok(rustDeprecated.includes(ref), `expected ${ref} in ${rustDeprecated}`)
+    }
+
+    // Python: pydantic.v1, Pydantic v1 APIs, distutils, SQLAlchemy 1.x Query, FastAPI on_event
+    const pyReport = buildAlignmentReport(
+      makeSkill({
+        packages: ['pydantic', 'sqlalchemy', 'fastapi', 'distutils'],
+        importSpecifiers: ['pydantic.v1', 'distutils.core'],
+        apiCalls: ['.dict()', '@validator', 'class Config', 'session.query', 'on_event'],
+      }),
+      makeRepo({
+        ecosystems: ['python'],
+        declaredDeps: { pydantic: '>=2.6', sqlalchemy: '>=2.0', fastapi: '>=0.111' },
+      }),
+    )
+    const pyDeprecated = pyReport.findings
+      .filter(f => f.kind === 'deprecated-api')
+      .map(f => f.skillReference)
+    for (const ref of [
+      'pydantic.v1',
+      '.dict()',
+      '@validator',
+      'class Config',
+      'distutils',
+      'session.query',
+      'on_event',
+    ]) {
+      assert.ok(pyDeprecated.includes(ref), `expected ${ref} in ${pyDeprecated}`)
+    }
+  })
+
+  test('detects Go // indirect dependencies and suggests running go mod tidy', () => {
+    const skill = makeSkill({
+      packages: ['golang.org/x/sync'],
+      packageEcosystems: { 'golang.org/x/sync': 'go' },
+    })
+    const repo = makeRepo({
+      ecosystems: ['go'],
+      declaredDeps: { 'github.com/gin-gonic/gin': 'v1.9.1' },
+      indirectDeps: { 'golang.org/x/sync': 'v0.7.0' },
+    })
+    const report = buildAlignmentReport(skill, repo)
+    const finding = report.findings.find(f => f.skillReference === 'golang.org/x/sync')
+    assert.ok(finding)
+    assert.equal(finding.kind, 'missing-dependency')
+    assert.equal(finding.repoReality, 'go.mod (// indirect)')
+
+    const suggestions = buildSuggestions(report.findings, repo)
+    assert.ok(suggestions.some(s => s.suggestion.includes('go mod tidy')))
   })
 })

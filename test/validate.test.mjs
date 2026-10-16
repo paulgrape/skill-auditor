@@ -53,4 +53,21 @@ describe('validate', () => {
     assert.equal(status, 1)
     assert.match(stdout, /INVALID/)
   })
+
+  test('validates the backend-must-have template and extracts its backend categories', () => {
+    const extracted = parseJson(['extract', './templates/backend-must-have'])
+    assert.deepEqual(extracted.categories, [
+      'logging',
+      'orm-db',
+      'testing',
+      'validation',
+      'web-framework',
+    ])
+    const validated = parseJson([
+      'validate',
+      './templates/backend-must-have',
+      '--json',
+    ])
+    assert.equal(validated.valid, true)
+  })
 })

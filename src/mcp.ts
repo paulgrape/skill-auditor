@@ -214,7 +214,7 @@ export const MCP_TOOLS: McpTool[] = [
         checklist: {
           type: 'string',
           description:
-            'Must-have checklist to measure coverage against (frontend, website, or a key from the project config).',
+            'Must-have checklist to measure coverage against (frontend, backend, website, or a key from the project config).',
         },
         defaults: {
           type: 'boolean',

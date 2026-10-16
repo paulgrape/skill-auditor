@@ -3,6 +3,67 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 2.1.0
+
+Backend taxonomy and `--checklist backend`, multi-language deprecation rules
+and `apiCalls` extraction across Python/Go/Rust fences, and deeper manifest
+coverage for Python, Go, Cargo, and JS/TS. `schemaVersion` stays **2**.
+
+### Added
+
+- **Backend taxonomy & `--checklist backend`.** Added `web-framework`,
+  `http-client`, `task-queue`, `serialization`, `logging`, `cli`, and `config`
+  categories to `src/taxonomyData.ts`, and extended `validation`, `orm-db`,
+  and `testing` across Python, Go, and Rust (`fastapi`, `django`, `flask`,
+  `gin`, `echo`, `fiber`, `chi`, `axum`, `actix_web`, `sqlalchemy`, `sqlmodel`,
+  `gorm`, `sqlx`, `sea_orm`, `diesel`, `pydantic`, `marshmallow`, `attrs`,
+  `validator`, `httpx`, `aiohttp`, `requests`, `reqwest`, `celery`, `rq`,
+  `dramatiq`, `asynq`, `tokio`, `serde`, `structlog`, `loguru`, `zap`,
+  `zerolog`, `tracing`, `click`, `typer`, `cobra`, `clap`, `python-dotenv`,
+  `viper`, `figment`, `pytest`, `hypothesis`, `testify`, `proptest`, `rstest`,
+  and more). Added `backend` to `MUST_HAVE_CHECKLISTS` and shipped
+  `templates/backend-must-have/SKILL.md`.
+- **Ecosystem-qualified taxonomy keys (`ecosystem:name`).** Taxonomy entries in
+  `src/taxonomyData.ts` and `.skill-auditor.json` can optionally prefix a
+  package name with `npm:`, `python:`, `go:`, or `cargo:` (for example
+  `python:redis` vs `npm:redis`) to disambiguate cross-ecosystem collisions.
+  Plain unqualified entries continue matching any ecosystem.
+- **Python, Go, and Rust `deprecated-api` rules and `apiCalls` extraction.**
+  `analyzeCode` in `src/skillIdentifiers.ts` now extracts call-shaped
+  identifiers, decorators, and macro calls from `python`, `go`, and `rust`
+  fences. Added Tier 1 and Tier 2 deprecation rules in `src/taxonomyData.ts`
+  for Go (`io/ioutil`, `github.com/pkg/errors`), Rust (`failure`, `structopt`,
+  `async-std`, `lazy_static`), and Python (`pydantic.v1`, Pydantic v1
+  `.dict()` / `@validator` / `class Config`, `distutils`, SQLAlchemy 1.x
+  `Query` / `session.query`, and FastAPI `@app.on_event`).
+- **Python manifest and import-to-distribution coverage.**
+  - `readRequirements` now follows `-r` / `--requirement` and `-c` /
+    `--constraint` includes relative to the current file with cycle protection
+    (`visited: Set<string>`).
+  - Added `readPipfile`, `readSetupCfg`, and `readSetupPy` and wired `Pipfile`,
+    `setup.cfg`, and `setup.py` into `MANIFEST_GLOBS.python`.
+  - Added `PYTHON_IMPORT_TO_DIST` and `resolvePythonDistName` mapping ~50
+    common PyPI distribution vs. import name mismatches (`sklearn` →
+    `scikit-learn`, `PIL` → `pillow`, `cv2` → `opencv-python`, `bs4` →
+    `beautifulsoup4`, `yaml` → `pyyaml`, `dotenv` → `python-dotenv`, `jwt` →
+    `pyjwt`, `dateutil` → `python-dateutil`, `google.protobuf` → `protobuf`,
+    etc.).
+- **Go `go.work`, `replace`, and `// indirect` support.**
+  - Added `readGoWork` and wired `go.work` into `MANIFEST_GLOBS.go`.
+  - `readGoMod` now parses `replace` directives and retains `// indirect`
+    requires in `indirect`. Local `replace` targets and `go.work` `use`
+    directories are treated as local modules; skills referencing an
+    indirect-only module get a `missing-dependency` finding with
+    `repoReality: "go.mod (// indirect)"` and a `go mod tidy` suggestion.
+- **Cargo workspace member & path dependency filtering.** Added
+  `readCargoManifest`; `[patch.*]` and `[replace]` tables are ignored, and
+  workspace member crates and `{ path = "…" }` dependencies are treated as
+  local crates rather than external dependencies.
+- **JS/TS `npm:` / `jsr:` specifiers and `optionalDependencies`.**
+  `topLevelPackage` strips `npm:` and `jsr:` prefixes and embedded version
+  ranges (`npm:zod@^3.22.0` → `zod`), and `package.json`
+  `optionalDependencies` are merged into `declaredDeps`.
+
 ## 2.0.1
 
 Correctness leftovers from the polyglot scan: sibling Go modules are no

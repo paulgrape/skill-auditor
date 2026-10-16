@@ -4,8 +4,29 @@ import {
   DEPRECATED_API_RULES,
   type DeprecatedApiRule,
 } from './taxonomyData.js'
+import type { Ecosystem, RepoReality, SkillIdentifiers } from './types.js'
 
 export { DEPRECATED_API_RULES, type DeprecatedApiRule }
+
+const ECOSYSTEM_PREFIXES = new Set<Ecosystem>(['npm', 'python', 'go', 'cargo'])
+
+/**
+ * Splits an optional `ecosystem:name` taxonomy key (`python:redis`) into its
+ * ecosystem constraint and bare package name. Plain keys have `ecosystem: undefined`.
+ */
+export function parseTaxonomyKey(key: string): {
+  ecosystem?: Ecosystem
+  packageName: string
+} {
+  const colonAt = key.indexOf(':')
+  if (colonAt > 0) {
+    const prefix = key.slice(0, colonAt) as Ecosystem
+    if (ECOSYSTEM_PREFIXES.has(prefix)) {
+      return { ecosystem: prefix, packageName: key.slice(colonAt + 1) }
+    }
+  }
+  return { packageName: key }
+}
 
 /**
  * The live taxonomy tables. They start as copies of the curated data and can
@@ -23,17 +44,46 @@ export const MUST_HAVE_CHECKLISTS: Record<string, string[]> = {}
  */
 export const PACKAGE_TO_CATEGORIES: Record<string, string[]> = {}
 
+interface QualifiedCategoryEntry {
+  ecosystem?: Ecosystem
+  category: string
+}
+
+const QUALIFIED_PACKAGE_TO_CATEGORIES: Record<string, QualifiedCategoryEntry[]> = {}
+const KNOWN_PACKAGE_NAMES = new Set<string>()
+
 function clear(table: Record<string, unknown>): void {
   for (const key of Object.keys(table)) delete table[key]
 }
 
 function rebuildReverseIndex(): void {
   clear(PACKAGE_TO_CATEGORIES)
+  clear(QUALIFIED_PACKAGE_TO_CATEGORIES)
+  KNOWN_PACKAGE_NAMES.clear()
+
   for (const [category, pkgs] of Object.entries(CATEGORY_TAXONOMY)) {
-    for (const pkg of pkgs) {
-      const existing = PACKAGE_TO_CATEGORIES[pkg] ?? []
-      if (!existing.includes(category)) existing.push(category)
-      PACKAGE_TO_CATEGORIES[pkg] = existing
+    for (const rawEntry of pkgs) {
+      const existingRaw = PACKAGE_TO_CATEGORIES[rawEntry] ?? []
+      if (!existingRaw.includes(category)) existingRaw.push(category)
+      PACKAGE_TO_CATEGORIES[rawEntry] = existingRaw
+
+      const { ecosystem, packageName } = parseTaxonomyKey(rawEntry)
+      KNOWN_PACKAGE_NAMES.add(packageName)
+      if (!ecosystem) {
+        const existingBare = PACKAGE_TO_CATEGORIES[packageName] ?? []
+        if (!existingBare.includes(category)) existingBare.push(category)
+        PACKAGE_TO_CATEGORIES[packageName] = existingBare
+      }
+
+      const qualified = QUALIFIED_PACKAGE_TO_CATEGORIES[packageName] ?? []
+      if (
+        !qualified.some(
+          q => q.category === category && q.ecosystem === ecosystem,
+        )
+      ) {
+        qualified.push({ ecosystem, category })
+      }
+      QUALIFIED_PACKAGE_TO_CATEGORIES[packageName] = qualified
     }
   }
 }
@@ -74,19 +124,88 @@ export function configureTaxonomy(extension: TaxonomyExtension = {}): void {
 
 configureTaxonomy()
 
-/** Taxonomy categories a package belongs to; empty when unknown. */
-export function categoriesForPackage(pkg: string): string[] {
-  return PACKAGE_TO_CATEGORIES[pkg] ?? []
+/**
+ * Taxonomy categories a package belongs to; empty when unknown. Plain taxonomy
+ * entries match any ecosystem; `ecosystem:name` entries (`python:redis`) match
+ * only when `ecosystems` includes that ecosystem (or `pkg` itself is passed as
+ * `ecosystem:name`).
+ */
+export function categoriesForPackage(
+  pkg: string,
+  ecosystems?: Ecosystem | Iterable<Ecosystem>,
+): string[] {
+  const parsed = parseTaxonomyKey(pkg)
+  let ecoFilter: Set<Ecosystem> | null = null
+  if (parsed.ecosystem) {
+    ecoFilter = new Set([parsed.ecosystem])
+  } else if (typeof ecosystems === 'string') {
+    ecoFilter = new Set([ecosystems])
+  } else if (ecosystems) {
+    const set = new Set(ecosystems)
+    if (set.size > 0) ecoFilter = set
+  }
+
+  const entries = QUALIFIED_PACKAGE_TO_CATEGORIES[parsed.packageName] ?? []
+  const result: string[] = []
+  for (const entry of entries) {
+    if (!entry.ecosystem || (ecoFilter !== null && ecoFilter.has(entry.ecosystem))) {
+      if (!result.includes(entry.category)) result.push(entry.category)
+    }
+  }
+  return result
 }
 
-/** True when the taxonomy classifies this package at all. */
-export function isKnownPackage(pkg: string): boolean {
-  return pkg in PACKAGE_TO_CATEGORIES
+/** True when the taxonomy classifies this package at all (qualified or unqualified). */
+export function isKnownPackage(
+  pkg: string,
+  ecosystems?: Ecosystem | Iterable<Ecosystem>,
+): boolean {
+  const parsed = parseTaxonomyKey(pkg)
+  if (parsed.ecosystem || ecosystems !== undefined) {
+    return categoriesForPackage(pkg, ecosystems).length > 0
+  }
+  return KNOWN_PACKAGE_NAMES.has(parsed.packageName)
 }
 
 /** True when the package belongs to the given taxonomy category. */
-export function packageInCategory(pkg: string, category: string): boolean {
-  return categoriesForPackage(pkg).includes(category)
+export function packageInCategory(
+  pkg: string,
+  category: string,
+  ecosystems?: Ecosystem | Iterable<Ecosystem>,
+): boolean {
+  return categoriesForPackage(pkg, ecosystems).includes(category)
+}
+
+/** Ecosystems associated with `pkg` in `repo`: evidence ecosystems when available, else `repo.ecosystems`. */
+export function ecosystemsForRepoPackage(
+  pkg: string,
+  repo: RepoReality,
+): Ecosystem[] {
+  const evidence = repo.importEvidence[pkg]
+  if (evidence && evidence.length > 0) {
+    return [...new Set(evidence.map(e => e.ecosystem))]
+  }
+  return repo.ecosystems
+}
+
+/** Ecosystems associated with `pkg` in `skill` (with optional `repo` fallback for inline mentions). */
+export function ecosystemsForSkillPackage(
+  pkg: string,
+  skill: SkillIdentifiers,
+  repo?: RepoReality,
+): Ecosystem[] {
+  const refEco = skill.packageRefs[pkg]?.ecosystem
+  if (refEco) return [refEco]
+  const skillEcos = [
+    ...new Set(
+      Object.values(skill.packageRefs)
+        .map(ref => ref.ecosystem)
+        .filter((e): e is Ecosystem => e !== undefined),
+    ),
+  ]
+  if (skillEcos.length > 0) return skillEcos
+  if (repo) return ecosystemsForRepoPackage(pkg, repo)
+  return []
 }
 
 /**

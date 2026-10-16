@@ -119,7 +119,7 @@ describe('gaps', () => {
     ])
     assert.equal(status, 2)
     assert.match(stderr, /Unknown checklist "frontned"/)
-    assert.match(stderr, /frontend, website/)
+    assert.match(stderr, /frontend, backend, website/)
   })
 
   test('scans the working directory when no roots are given', () => {
@@ -132,7 +132,7 @@ describe('gaps', () => {
 
   test('lists the valid checklist keys in --help', () => {
     const { stdout } = run(['gaps', '--help'])
-    assert.match(stdout, /frontend\|website/)
+    assert.match(stdout, /frontend\|backend\|website/)
   })
 })
 

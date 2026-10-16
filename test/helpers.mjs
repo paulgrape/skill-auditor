@@ -97,6 +97,7 @@ export const FAKE_PROJECT = './fixtures/fake-project'
 /** Builds a SkillIdentifiers-shaped object for unit tests of the scoring core. */
 export function makeSkill({
   packages = [],
+  packageEcosystems = {},
   importSpecifiers = [],
   apiCalls = [],
   substantiation = 'usage',
@@ -120,6 +121,7 @@ export function makeSkill({
           packageName: p,
           substantiation,
           substantiatedByProse,
+          ecosystem: packageEcosystems[p],
           location: { file: 'SKILL.md', line: 1 },
         },
       ]),
@@ -143,6 +145,7 @@ export function makeSkill({
 /** Builds a RepoReality-shaped object for unit tests of the scoring core. */
 export function makeRepo({
   declaredDeps = {},
+  indirectDeps = {},
   usedImports = {},
   usedIdentifiers = {},
   ecosystems = ['npm'],
@@ -150,6 +153,7 @@ export function makeRepo({
   return {
     ecosystems,
     declaredDeps,
+    indirectDeps,
     usedImports: Object.fromEntries(
       Object.entries(usedImports).map(([k, v]) => [k, new Set(v)]),
     ),

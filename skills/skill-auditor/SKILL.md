@@ -57,7 +57,7 @@ Set variables for the rest of the workflow:
 
 ## Step 1b — Choose scope (default: technical only)
 
-Default scope: **audit and fix only technical skills** — the package-backed stack (routing, state, data-fetching, validation, styling, testing, forms, orm-db) via `--checklist frontend`. Do this without asking.
+Default scope: **audit and fix only technical skills** — the package-backed stack via `--checklist frontend` (routing, state, data-fetching, validation, styling, testing, forms, orm-db) and/or `--checklist backend` (`web-framework`, `orm-db`, `validation`, `testing`, `logging`, `http-client`, `task-queue`, `serialization`, `cli`, `config`). Do this without asking.
 
 Website Specification work (the `--checklist website` domains + `spec-check` static compliance) is **opt-in**. Before running any `spec-check` or fixing/creating `website-*` domain skills, ask the user:
 
@@ -100,7 +100,7 @@ From `gaps`:
 - Each gap may include `evidence[]` with project-specific `packageName`, `specifier`, `file`, and `example` — use this first when creating skills
 
 Checklist key by scope:
-- Default (technical) → `--checklist frontend` for React/Next; omit `--checklist` if stack is unknown and rely on `uncovered-category` gaps.
+- Default (technical) → `--checklist frontend` for React/Next frontends, `--checklist backend` for Python/Go/Rust/Node backend services (or run both on full-stack repos); omit `--checklist` if stack is unknown and rely on `uncovered-category` gaps.
 - `WEBSITE_SCOPE=yes` only → also use `--checklist website`.
 
 The `website` checklist covers Website Specification domains (`foundations`, `seo`, `accessibility`, `security`, `performance`, `privacy`, `resilience`, `i18n`, `agent-readiness`). These are not npm-package categories — a skill covers a domain by declaring it in `metadata.categories` (a comma-separated string; the spec does not allow a top-level `categories:` list):
@@ -244,8 +244,18 @@ Select bullets matching the gap's `category` and actual package:
 - Keep default values typed; avoid uncontrolled→controlled flicker
 
 **orm-db**
-- Use the repo's query layer (Drizzle/Prisma/Kysely) consistently — do not mix ORMs
+- Use the repo's query layer (Drizzle/Prisma/Kysely, SQLAlchemy 2.0 `select()`, GORM/SQLx/pgx, SeaORM/Diesel) consistently — do not mix ORMs
 - Keep migrations and schema definitions in existing project locations
+
+**web-framework**
+- Match the repo's framework (`fastapi`, `django`, `flask`, `gin`, `echo`, `fiber`, `chi`, `axum`, `actix_web`) and router/dependency-injection patterns
+- In FastAPI, use `lifespan` context managers rather than deprecated `@app.on_event("startup" / "shutdown")`
+
+**logging**
+- Use structured logging (`structlog`, `loguru`, `zap`, `zerolog`, `tracing`) with bound context fields rather than ad-hoc `print` / `fmt.Println`
+
+**http-client / task-queue / serialization / cli / config**
+- Reuse shared HTTP clients (`httpx.AsyncClient`, `reqwest::Client`), queue task definitions (`celery`, `asynq`, `tokio`), and typed settings (`pydantic-settings`, `viper`, `figment`, `clap` derive)
 
 ## Step 5 — Verify loop
 
@@ -318,7 +328,14 @@ When scan lists multiple packages in one category, prefer the one with entries i
 | styling | `tailwindcss`, `styled-components`, `@emotion/react` |
 | testing | `vitest`, `jest`, `@testing-library/react`, `playwright` |
 | forms | `react-hook-form`, `formik` |
-| orm-db | `drizzle-orm`, `prisma`, `kysely` |
+| orm-db | `drizzle-orm`, `prisma`, `kysely`, `sqlalchemy`, `sqlmodel`, `gorm.io/gorm`, `sqlx`, `sea_orm`, `diesel` |
+| web-framework | `fastapi`, `django`, `flask`, `github.com/gin-gonic/gin`, `github.com/labstack/echo`, `axum`, `actix_web` |
+| logging | `structlog`, `loguru`, `go.uber.org/zap`, `github.com/rs/zerolog`, `tracing` |
+| http-client | `httpx`, `aiohttp`, `requests`, `reqwest`, `github.com/go-resty/resty` |
+| task-queue | `celery`, `rq`, `dramatiq`, `github.com/hibiken/asynq`, `tokio` |
+| serialization | `serde`, `serde_json`, `orjson`, `msgspec`, `protobuf` |
+| cli | `click`, `typer`, `github.com/spf13/cobra`, `clap` |
+| config | `python-dotenv`, `pydantic-settings`, `github.com/spf13/viper`, `figment` |
 
 Always prefer repo scan over this table.
 

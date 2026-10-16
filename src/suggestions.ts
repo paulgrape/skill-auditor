@@ -14,6 +14,12 @@ function suggestForFinding(finding: DriftFinding): string {
         : `Remove or replace "${finding.skillReference}" with the library the project actually uses, including a real usage example.`
 
     case 'missing-dependency':
+      if (
+        finding.repoReality === 'go.mod (// indirect)' ||
+        finding.message.includes('go mod tidy')
+      ) {
+        return `Run \`go mod tidy\` so "${finding.skillReference}" is promoted from an \`// indirect\` require to a direct dependency in \`go.mod\`, or remove the "${finding.skillReference}" reference from the skill if the project does not use it directly.`
+      }
       return `The project has no library for what "${finding.skillReference}" does. Either this skill covers a concern the project doesn't have (drop the section), or the recommendation is intentional (keep it, but say explicitly that the project would need to adopt "${finding.skillReference}" first).`
 
     case 'deprecated-api':

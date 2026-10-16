@@ -21,6 +21,17 @@ export interface GoModule {
   modulePath: string
   /** Direct requirements: module path -> version */
   require: Record<string, string>
+  /** Indirect requirements (`// indirect`): module path -> version */
+  indirect: Record<string, string>
+  /** Replace directives: replaced module path -> target (local path or module path) */
+  replace: Record<string, string>
+}
+
+export interface GoWork {
+  /** Workspace member directories from `use` directives */
+  use: string[]
+  /** Replace directives in go.work */
+  replace: Record<string, string>
 }
 
 /**
@@ -45,16 +56,39 @@ export function goPackageName(
   return segments.slice(0, depth).join('/')
 }
 
+function parseReplaceEntry(
+  entry: string,
+  targetMap: Record<string, string>,
+): void {
+  const cleaned = entry.replace(/\/\/.*$/, '').trim()
+  const arrowAt = cleaned.indexOf('=>')
+  if (arrowAt === -1) return
+  const left = cleaned.slice(0, arrowAt).trim().split(/\s+/)[0] ?? ''
+  const right = cleaned.slice(arrowAt + 2).trim().split(/\s+/)[0] ?? ''
+  if (!left || !right) return
+  const from = goPackageName(left) || left
+  const to =
+    right.startsWith('./') || right.startsWith('../') || right.startsWith('/')
+      ? right
+      : goPackageName(right) || right
+  targetMap[from] = to
+}
+
 /**
- * Reads the `module` directive and direct `require` entries of a go.mod.
- * Required module paths go through the same reduction as imports, so
- * `github.com/redis/go-redis/v9` in go.mod and the `v9` import path in source
- * land on one name (indirect requirements are transitive, not the stack).
+ * Reads the `module` directive, direct and `// indirect` `require` entries,
+ * and `replace` directives of a go.mod. Required module paths go through the
+ * same reduction as imports, so `github.com/redis/go-redis/v9` in go.mod and
+ * the `v9` import path in source land on one name.
  */
 export function readGoMod(text: string): GoModule {
-  const result: GoModule = { modulePath: '', require: {} }
+  const result: GoModule = {
+    modulePath: '',
+    require: {},
+    indirect: {},
+    replace: {},
+  }
   const lines = text.replace(/\r\n/g, '\n').split('\n')
-  let inRequireBlock = false
+  let blockKind: 'require' | 'replace' | null = null
 
   for (const raw of lines) {
     const line = raw.replace(/\/\/(.*)$/, (_m, comment: string) =>
@@ -67,31 +101,90 @@ export function readGoMod(text: string): GoModule {
       continue
     }
     if (line === 'require (') {
-      inRequireBlock = true
+      blockKind = 'require'
       continue
     }
-    if (inRequireBlock && line === ')') {
-      inRequireBlock = false
+    if (line === 'replace (') {
+      blockKind = 'replace'
+      continue
+    }
+    if (blockKind && line === ')') {
+      blockKind = null
       continue
     }
 
-    const entry = inRequireBlock
-      ? line
-      : line.startsWith('require ')
-        ? line.slice('require '.length)
-        : null
+    if (blockKind === 'replace' || line.startsWith('replace ')) {
+      const replaceBody =
+        blockKind === 'replace' ? line : line.slice('replace '.length)
+      parseReplaceEntry(replaceBody, result.replace)
+      continue
+    }
+
+    const entry =
+      blockKind === 'require'
+        ? line
+        : line.startsWith('require ')
+          ? line.slice('require '.length)
+          : null
     if (entry === null) continue
-    if (/\/\/ indirect$/.test(entry)) continue // transitive, not the project's stack
-    const match = entry.match(/^(\S+)\s+(\S+)/)
+    const isIndirect = /\/\/ indirect$/.test(entry)
+    const stripped = isIndirect ? entry.replace(/\/\/ indirect$/, '').trim() : entry
+    const match = stripped.match(/^(\S+)\s+(\S+)/)
     if (!match) continue
     const name = goPackageName(match[1]) || match[1]
-    if (!(name in result.require)) result.require[name] = match[2]
+    if (isIndirect) {
+      if (!(name in result.indirect)) result.indirect[name] = match[2]
+    } else {
+      if (!(name in result.require)) result.require[name] = match[2]
+    }
+  }
+  return result
+}
+
+/** Reads `use` and `replace` directives from a `go.work` file. */
+export function readGoWork(text: string): GoWork {
+  const result: GoWork = { use: [], replace: {} }
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  let blockKind: 'use' | 'replace' | null = null
+
+  const pushUse = (rawDir: string) => {
+    const dir = rawDir.trim().replace(/^"|"$/g, '')
+    if (dir && !result.use.includes(dir)) result.use.push(dir)
+  }
+
+  for (const raw of lines) {
+    const line = raw.replace(/\/\/.*$/, '').trim()
+    if (!line) continue
+    if (line === 'use (') {
+      blockKind = 'use'
+      continue
+    }
+    if (line === 'replace (') {
+      blockKind = 'replace'
+      continue
+    }
+    if (blockKind && line === ')') {
+      blockKind = null
+      continue
+    }
+    if (blockKind === 'use') {
+      pushUse(line)
+      continue
+    }
+    if (line.startsWith('use ')) {
+      pushUse(line.slice('use '.length))
+      continue
+    }
+    if (blockKind === 'replace' || line.startsWith('replace ')) {
+      const body = blockKind === 'replace' ? line : line.slice('replace '.length)
+      parseReplaceEntry(body, result.replace)
+    }
   }
   return result
 }
 
 /** Blanks comments and raw strings so a quoted `import` in a comment is not read. */
-function stripGoComments(source: string): string {
+export function stripGoComments(source: string): string {
   let out = ''
   let i = 0
   const n = source.length

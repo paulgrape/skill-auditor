@@ -31,14 +31,30 @@ export {
   type BuildRepoRealityOptions,
   type Parser,
 } from './repoReality.js'
-export { readGoMod, scanGoImports, type GoModule } from './ecosystems/go.js'
+export {
+  readGoMod,
+  readGoWork,
+  scanGoImports,
+  type GoModule,
+  type GoWork,
+} from './ecosystems/go.js'
 export { scanJavaScriptImports } from './ecosystems/javascript.js'
 export {
+  PYTHON_IMPORT_TO_DIST,
+  readPipfile,
   readPyproject,
   readRequirements,
+  readSetupCfg,
+  readSetupPy,
+  resolvePythonDistName,
   scanPythonImports,
 } from './ecosystems/python.js'
-export { readCargoToml, scanRustImports } from './ecosystems/rust.js'
+export {
+  readCargoManifest,
+  readCargoToml,
+  scanRustImports,
+  type CargoManifest,
+} from './ecosystems/rust.js'
 export type { ImportBinding, SourceImport } from './ecosystems/types.js'
 export {
   auditReport,

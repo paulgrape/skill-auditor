@@ -87,8 +87,13 @@ export function scanReport(
   options: BuildRepoRealityOptions = {},
 ) {
   const loaded = prepareProject(projectRoot)
+  const reality = buildRepoReality(projectRoot, options)
   return envelope({
-    ...buildRepoReality(projectRoot, options),
+    ecosystems: reality.ecosystems,
+    declaredDeps: reality.declaredDeps,
+    usedImports: reality.usedImports,
+    usedIdentifiers: reality.usedIdentifiers,
+    importEvidence: reality.importEvidence,
     parser: resolveParser(options.parser),
     config: describeConfig(loaded),
   })
