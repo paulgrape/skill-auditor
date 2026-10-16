@@ -1,6 +1,8 @@
 import {
   categoriesForPackage,
   DEPRECATED_API_RULES,
+  ecosystemsForRepoPackage,
+  ecosystemsForSkillPackage,
   packageInCategory,
   STUFFING_THRESHOLDS,
   UNKNOWN_ALIGNMENT_PRIOR,
@@ -35,8 +37,15 @@ export function firstPackageLocation(
   return first === undefined ? SKILL_WIDE_LOCATION : packageLocation(skill, first)
 }
 
-/** True if repo declares OR actually imports this top-level package. */
+function isIndirectOnly(pkg: string, repo: RepoReality): boolean {
+  return Boolean(
+    repo.indirectDeps && pkg in repo.indirectDeps && !(pkg in repo.declaredDeps),
+  )
+}
+
+/** True if repo declares OR actually imports this top-level package (excluding indirect-only Go requires). */
 export function repoHasPackage(pkg: string, repo: RepoReality): boolean {
+  if (isIndirectOnly(pkg, repo)) return false
   return pkg in repo.declaredDeps || pkg in repo.usedImports
 }
 
@@ -49,14 +58,33 @@ function repoPackagesInCategory(category: string, repo: RepoReality): string[] {
     ...Object.keys(repo.declaredDeps),
     ...Object.keys(repo.usedImports),
   ])
-  return [...seen].filter(p => packageInCategory(p, category))
+  return [...seen].filter(
+    p =>
+      !isIndirectOnly(p, repo) &&
+      packageInCategory(p, category, ecosystemsForRepoPackage(p, repo)),
+  )
 }
 
-/** True if any recorded import specifier equals or extends `specifier`. */
+/** exact match, or `spec` is a prefix path/module of `candidate` (`next/router`, `distutils.core`, `failure::Error`) */
+function specifierMatches(candidate: string, spec: string): boolean {
+  return (
+    candidate === spec ||
+    candidate.startsWith(spec + '/') ||
+    candidate.startsWith(spec + '.') ||
+    candidate.startsWith(spec + '::')
+  )
+}
+
+/** True if the repo declares or imports a specifier that equals or extends `specifier`. */
 function repoUsesSpecifier(specifier: string, repo: RepoReality): boolean {
-  for (const specifiers of Object.values(repo.usedImports)) {
+  if (specifier in repo.declaredDeps) return true
+  if (specifier in repo.usedImports && !isIndirectOnly(specifier, repo)) {
+    return true
+  }
+  for (const [pkg, specifiers] of Object.entries(repo.usedImports)) {
+    if (isIndirectOnly(pkg, repo)) continue
     for (const s of specifiers) {
-      if (s === specifier || s.startsWith(specifier + '/')) return true
+      if (specifierMatches(s, specifier)) return true
     }
   }
   return false
@@ -64,8 +92,9 @@ function repoUsesSpecifier(specifier: string, repo: RepoReality): boolean {
 
 /**
  * A deprecation rule applies only when the repo demonstrably adopted the
- * successor: by importing one of the named specifiers, or one of the named
- * identifiers from a package.
+ * successor: by importing/declaring one of the named specifiers, importing one
+ * of the named identifiers from a package, or belonging to the successor
+ * standard-library ecosystem without still using the deprecated specifier.
  */
 function ruleApplies(rule: DeprecatedApiRule, repo: RepoReality): boolean {
   const specifiers =
@@ -74,11 +103,34 @@ function ruleApplies(rule: DeprecatedApiRule, repo: RepoReality): boolean {
       : Array.isArray(rule.onlyIfRepoUses)
         ? rule.onlyIfRepoUses
         : [rule.onlyIfRepoUses]
-  if (specifiers.some(s => repoUsesSpecifier(s, repo))) return true
+  if (specifiers.some(s => repoUsesSpecifier(s, repo))) {
+    // Do not fire if the repo itself still declares or imports the deprecated specifier.
+    const repoStillUsesDeprecated = (rule.deprecatedImportSpecifiers ?? []).some(
+      dep => repoUsesSpecifier(dep, repo),
+    )
+    if (!repoStillUsesDeprecated) return true
+  }
 
-  return (rule.onlyIfRepoImports ?? []).some(({ package: pkg, identifier }) =>
-    repo.usedIdentifiers[pkg]?.has(identifier),
-  )
+  if (
+    (rule.onlyIfRepoImports ?? []).some(({ package: pkg, identifier }) =>
+      repo.usedIdentifiers[pkg]?.has(identifier),
+    )
+  ) {
+    return true
+  }
+
+  if (rule.onlyIfRepoEcosystem !== undefined) {
+    const ecosystems = Array.isArray(rule.onlyIfRepoEcosystem)
+      ? rule.onlyIfRepoEcosystem
+      : [rule.onlyIfRepoEcosystem]
+    const inEcosystem = ecosystems.some(e => repo.ecosystems.includes(e))
+    const repoStillUsesDeprecated = (rule.deprecatedImportSpecifiers ?? []).some(
+      dep => repoUsesSpecifier(dep, repo),
+    )
+    if (inEcosystem && !repoStillUsesDeprecated) return true
+  }
+
+  return false
 }
 
 /** What the rule's message should cite as the repo's side of the story. */
@@ -91,12 +143,14 @@ function ruleEvidence(rule: DeprecatedApiRule): string {
   const identifiers = (rule.onlyIfRepoImports ?? []).map(
     ({ package: pkg, identifier }) => `${identifier} from ${pkg}`,
   )
-  return [...specifiers, ...identifiers].join(' | ')
-}
-
-/** exact match, or `spec` is a prefix path of `candidate` (next/router -> next/router/x) */
-function specifierMatches(candidate: string, spec: string): boolean {
-  return candidate === spec || candidate.startsWith(spec + '/')
+  const combined = [...specifiers, ...identifiers].join(' | ')
+  if (combined) return combined
+  const ecosystems = Array.isArray(rule.onlyIfRepoEcosystem)
+    ? rule.onlyIfRepoEcosystem
+    : rule.onlyIfRepoEcosystem
+      ? [rule.onlyIfRepoEcosystem]
+      : []
+  return ecosystems.join(' | ')
 }
 
 /**
@@ -143,7 +197,8 @@ function detectMetricStuffing(
   // 3. Category padding: piling several same-category packages into one skill.
   const byCategory = new Map<string, string[]>()
   for (const pkg of skill.packages) {
-    for (const cat of categoriesForPackage(pkg)) {
+    const skillEcos = ecosystemsForSkillPackage(pkg, skill, repo)
+    for (const cat of categoriesForPackage(pkg, skillEcos)) {
       byCategory.set(cat, [...(byCategory.get(cat) ?? []), pkg])
     }
   }
@@ -239,10 +294,27 @@ export function buildAlignmentReport(
       continue
     }
 
+    if (isIndirectOnly(pkg, repo)) {
+      scorableReferenceCount++
+      const importedInSource = pkg in repo.usedImports
+      findings.push({
+        severity: 'warning',
+        kind: 'missing-dependency',
+        message: importedInSource
+          ? `Skill uses "${pkg}", which the project imports in source but only lists as "// indirect" in go.mod; run \`go mod tidy\` to promote it to a direct dependency.`
+          : `Skill uses "${pkg}", which is only listed as "// indirect" in go.mod (not a direct dependency); run \`go mod tidy\` if the project uses it directly.`,
+        skillReference: pkg,
+        repoReality: 'go.mod (// indirect)',
+        location,
+      })
+      continue
+    }
+
     // A package can span categories (RTK is state + data-fetching). It stays
     // one reference and one finding: the categories that actually conflict
     // decide the verdict, so a rival in any of them is a conflict.
-    const categories = categoriesForPackage(pkg)
+    const skillEcos = ecosystemsForSkillPackage(pkg, skill, repo)
+    const categories = categoriesForPackage(pkg, skillEcos)
     if (categories.length > 0) {
       scorableReferenceCount++
 

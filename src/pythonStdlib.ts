@@ -12,7 +12,7 @@ const PYTHON_STDLIB = new Set([
   'cgitb', 'chunk', 'cmath', 'cmd', 'code', 'codecs', 'codeop', 'collections',
   'colorsys', 'compileall', 'concurrent', 'configparser', 'contextlib',
   'contextvars', 'copy', 'copyreg', 'crypt', 'csv', 'ctypes', 'curses',
-  'dataclasses', 'datetime', 'dbm', 'decimal', 'difflib', 'dis', 'distutils',
+  'dataclasses', 'datetime', 'dbm', 'decimal', 'difflib', 'dis',
   'doctest', 'email', 'encodings', 'ensurepip', 'enum', 'errno',
   'faulthandler', 'fcntl', 'filecmp', 'fileinput', 'fnmatch', 'fractions',
   'ftplib', 'functools', 'gc', 'genericpath', 'getopt', 'getpass', 'gettext',

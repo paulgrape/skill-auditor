@@ -36,6 +36,7 @@ interface SerializedReality {
   usedImports: Record<string, string[]>
   usedIdentifiers: Record<string, string[]>
   importEvidence: RepoReality['importEvidence']
+  indirectDeps?: Record<string, string>
 }
 
 const memory = new Map<string, CacheEntry>()
@@ -100,6 +101,7 @@ function revive(serialized: SerializedReality): RepoReality {
     usedImports: toSets(serialized.usedImports ?? {}),
     usedIdentifiers: toSets(serialized.usedIdentifiers ?? {}),
     importEvidence: serialized.importEvidence ?? {},
+    ...(serialized.indirectDeps ? { indirectDeps: serialized.indirectDeps } : {}),
   }
 }
 

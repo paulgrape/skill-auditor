@@ -1,10 +1,16 @@
 import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
-import { scanGoImports } from './ecosystems/go.js'
+import { scanGoImports, stripGoComments } from './ecosystems/go.js'
 import { maskJavaScript, scanJavaScriptImports } from './ecosystems/javascript.js'
-import { scanPythonImports } from './ecosystems/python.js'
-import { scanRustImports } from './ecosystems/rust.js'
+import {
+  scanPythonImports,
+  stripPythonStringsAndComments,
+} from './ecosystems/python.js'
+import {
+  scanRustImports,
+  stripRustCommentsAndStrings,
+} from './ecosystems/rust.js'
 import { lineOf, type SourceImport } from './ecosystems/types.js'
 import {
   declaredCategories,
@@ -13,6 +19,7 @@ import {
 } from './frontmatter.js'
 import { isKnownPackage, PROSE_MIN_WORDS } from './taxonomy.js'
 import type {
+  Ecosystem,
   PackageReference,
   ReferenceSubstantiation,
   SkillIdentifiers,
@@ -58,6 +65,47 @@ const API_CALL_RE = /\b([a-zA-Z_$][\w$]*)\s*\(/g
 /** Control-flow words that look like calls but are not API surface. */
 const JS_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'function', 'return'])
 
+const PYTHON_KEYWORDS_AND_BUILTINS = new Set([
+  'if', 'elif', 'while', 'for', 'with', 'except', 'def', 'class', 'return',
+  'yield', 'assert', 'del', 'print', 'len', 'range', 'str', 'int', 'float',
+  'bool', 'list', 'dict', 'set', 'tuple', 'super', 'isinstance', 'issubclass',
+  'getattr', 'setattr', 'hasattr', 'open', 'type', 'enumerate', 'zip', 'map',
+  'filter', 'sorted', 'reversed', 'any', 'all', 'min', 'max', 'sum', 'abs',
+  'round', 'id', 'repr', 'vars', 'dir', 'next', 'iter', 'callable', 'chr',
+  'ord', 'hex', 'oct', 'bin', 'pow', 'divmod', 'hash', 'input', ' object',
+  'object', 'property', 'staticmethod', 'classmethod', 'Exception',
+  'ValueError', 'TypeError', 'KeyError', 'RuntimeError',
+])
+
+const GO_KEYWORDS_AND_BUILTINS = new Set([
+  'func', 'if', 'for', 'switch', 'select', 'go', 'defer', 'return', 'type',
+  'make', 'new', 'len', 'cap', 'append', 'copy', 'delete', 'close', 'panic',
+  'recover', 'complex', 'real', 'imag', 'print', 'println', 'string', 'int',
+  'int8', 'int16', 'int32', 'int64', 'uint', 'uint8', 'uint16', 'uint32',
+  'uint64', 'float32', 'float64', 'byte', 'rune', 'bool', 'error', 'clear',
+  'min', 'max',
+])
+
+const RUST_KEYWORDS_AND_BUILTINS = new Set([
+  'if', 'while', 'for', 'loop', 'match', 'return', 'fn', 'pub', 'impl',
+  'struct', 'enum', 'trait', 'where', 'Some', 'None', 'Ok', 'Err', 'Box',
+  'Vec', 'String', 'drop', 'clone', 'into', 'from', 'unwrap', 'expect', 'map',
+  'and_then', 'or_else', 'collect', 'iter', 'into_iter', 'len', 'is_empty',
+  'new', 'default', 'as_ref', 'as_mut', 'to_string', 'to_owned', 'push',
+])
+
+const RUST_STD_MACROS = new Set([
+  'println', 'eprintln', 'print', 'eprint', 'format', 'vec', 'panic',
+  'assert', 'assert_eq', 'assert_ne', 'debug_assert', 'debug_assert_eq',
+  'debug_assert_ne', 'write', 'writeln', 'todo', 'unimplemented',
+  'unreachable', 'matches', 'cfg', 'env', 'include', 'include_str',
+  'include_bytes', 'concat', 'stringify', 'line', 'column', 'file',
+  'module_path', 'dbg',
+])
+
+/** Deprecated stdlib import specifiers that should be recorded even though they have no external package. */
+const DEPRECATED_STDLIB_SPECIFIERS = new Set(['io/ioutil'])
+
 const SUBSTANTIATION_RANK: Record<ReferenceSubstantiation, number> = {
   mention: 0,
   fenced: 1,
@@ -81,7 +129,10 @@ function identifierUsedIn(code: string, identifier: string): boolean {
 /** What one snippet contributes, with 0-based line offsets inside the snippet. */
 interface CodeAnalysis {
   /** package -> best substantiation tier found in this code, and where */
-  packages: Map<string, { tier: ReferenceSubstantiation; line: number }>
+  packages: Map<
+    string,
+    { tier: ReferenceSubstantiation; line: number; ecosystem?: Ecosystem }
+  >
   /** package -> imported binding names (exported names) */
   importedIdentifiers: Map<string, Set<string>>
   importSpecifiers: Map<string, number>
@@ -105,12 +156,18 @@ function upgrade(
   pkg: string,
   tier: ReferenceSubstantiation,
   line: number,
+  ecosystem?: Ecosystem,
 ): void {
   const current = result.packages.get(pkg)
   if (!current) {
-    result.packages.set(pkg, { tier, line })
-  } else if (SUBSTANTIATION_RANK[tier] > SUBSTANTIATION_RANK[current.tier]) {
-    current.tier = tier
+    result.packages.set(pkg, { tier, line, ecosystem })
+  } else {
+    if (SUBSTANTIATION_RANK[tier] > SUBSTANTIATION_RANK[current.tier]) {
+      current.tier = tier
+    }
+    if (!current.ecosystem && ecosystem) {
+      current.ecosystem = ecosystem
+    }
   }
 }
 
@@ -124,9 +181,17 @@ function upgrade(
 function analyzeImports(code: string, imports: SourceImport[]): CodeAnalysis {
   const result = emptyAnalysis()
   for (const imp of imports) {
-    const pkg = imp.packageName
-    if (!pkg) continue
     const line = lineOf(code, imp.start)
+    const pkg = imp.packageName
+    if (!pkg) {
+      if (
+        DEPRECATED_STDLIB_SPECIFIERS.has(imp.specifier) &&
+        !result.importSpecifiers.has(imp.specifier)
+      ) {
+        result.importSpecifiers.set(imp.specifier, line)
+      }
+      continue
+    }
     if (!result.importSpecifiers.has(imp.specifier)) {
       result.importSpecifiers.set(imp.specifier, line)
     }
@@ -134,7 +199,7 @@ function analyzeImports(code: string, imports: SourceImport[]): CodeAnalysis {
     if (!imp.bindingsKnown || imp.bindings.length === 0) {
       // require()/dynamic import results are not tracked; side-effect and
       // glob imports have nothing to use. Fenced-level evidence at most.
-      upgrade(result, pkg, 'fenced', line)
+      upgrade(result, pkg, 'fenced', line, imp.ecosystem)
       continue
     }
 
@@ -148,13 +213,23 @@ function analyzeImports(code: string, imports: SourceImport[]): CodeAnalysis {
     const codeAfterImport = code.slice(0, imp.start) + code.slice(imp.end)
     const used = imp.bindings.some(b => identifierUsedIn(codeAfterImport, b.local))
     if (used) {
-      upgrade(result, pkg, 'usage', line)
+      upgrade(result, pkg, 'usage', line, imp.ecosystem)
     } else {
       result.unusedImportLines.push(line)
-      upgrade(result, pkg, 'fenced', line)
+      upgrade(result, pkg, 'fenced', line, imp.ecosystem)
     }
   }
   return result
+}
+
+function recordApiCall(
+  target: Map<string, number>,
+  name: string,
+  line: number,
+): void {
+  if (name && !target.has(name)) {
+    target.set(name, line)
+  }
 }
 
 function analyzeJavaScript(code: string): CodeAnalysis {
@@ -169,22 +244,114 @@ function analyzeJavaScript(code: string): CodeAnalysis {
   return result
 }
 
+function analyzePython(code: string): CodeAnalysis {
+  const result = analyzeImports(code, scanPythonImports(code))
+  const text = stripPythonStringsAndComments(code.replace(/\r\n/g, '\n'))
+
+  // Decorators: `@validator(...)`, `@root_validator`, `@app.on_event("startup")`
+  for (const m of text.matchAll(/^[ \t]*@([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)/gm)) {
+    const line = lineOf(text, m.index)
+    const full = m[1]
+    const leaf = full.split('.').pop() ?? full
+    recordApiCall(result.apiCalls, `@${leaf}`, line)
+    recordApiCall(result.apiCalls, leaf, line)
+  }
+
+  // Pydantic v1 `class Config:` inner configuration class
+  for (const m of text.matchAll(/\bclass[ \t]+Config\b/g)) {
+    recordApiCall(result.apiCalls, 'class Config', lineOf(text, m.index))
+  }
+
+  // Method calls `.dict(...)` (Pydantic v1) and `.query(...)` (SQLAlchemy 1.x)
+  for (const m of text.matchAll(/\.dict\s*\(/g)) {
+    recordApiCall(result.apiCalls, '.dict()', lineOf(text, m.index))
+  }
+  for (const m of text.matchAll(/\.query\s*\(/g)) {
+    const line = lineOf(text, m.index)
+    recordApiCall(result.apiCalls, 'session.query', line)
+    recordApiCall(result.apiCalls, 'Query', line)
+  }
+
+  for (const m of text.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)) {
+    const callee = m[1]
+    if (PYTHON_KEYWORDS_AND_BUILTINS.has(callee)) continue
+    recordApiCall(result.apiCalls, callee, lineOf(text, m.index))
+  }
+
+  return result
+}
+
+function analyzeGo(code: string): CodeAnalysis {
+  const result = analyzeImports(code, scanGoImports(code))
+  const noComments = stripGoComments(code.replace(/\r\n/g, '\n'))
+  // Blank double-quoted string literals on a single line so calls in strings do not count.
+  const text = noComments.replace(/"(?:\\.|[^"\\\n])*"/g, m => ' '.repeat(m.length))
+
+  for (const m of text.matchAll(/\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(/g)) {
+    const line = lineOf(text, m.index)
+    recordApiCall(result.apiCalls, `${m[1]}.${m[2]}`, line)
+    if (!GO_KEYWORDS_AND_BUILTINS.has(m[2])) {
+      recordApiCall(result.apiCalls, m[2], line)
+    }
+  }
+  for (const m of text.matchAll(/\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b/g)) {
+    // Package-level symbols like `ioutil.Discard` used without `(`
+    if (m[1] === 'ioutil') {
+      recordApiCall(result.apiCalls, `${m[1]}.${m[2]}`, lineOf(text, m.index))
+    }
+  }
+  for (const m of text.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)) {
+    const callee = m[1]
+    if (GO_KEYWORDS_AND_BUILTINS.has(callee)) continue
+    recordApiCall(result.apiCalls, callee, lineOf(text, m.index))
+  }
+  return result
+}
+
+function analyzeRust(code: string): CodeAnalysis {
+  const result = analyzeImports(code, scanRustImports(code))
+  const text = stripRustCommentsAndStrings(code.replace(/\r\n/g, '\n'))
+
+  // Derive macros: `#[derive(Debug, StructOpt)]`
+  for (const m of text.matchAll(/#\[\s*derive\s*\(([^)]+)\)\s*\]/g)) {
+    const line = lineOf(text, m.index)
+    for (const rawTrait of m[1].split(',')) {
+      const traitName = rawTrait.trim().split('::').pop()?.trim() ?? ''
+      if (traitName) recordApiCall(result.apiCalls, traitName, line)
+    }
+  }
+
+  // Macro invocations: `lazy_static! { ... }`
+  for (const m of text.matchAll(/\b([A-Za-z_]\w*)!\s*[\(\[\{]/g)) {
+    const macroName = m[1]
+    if (RUST_STD_MACROS.has(macroName)) continue
+    recordApiCall(result.apiCalls, macroName, lineOf(text, m.index))
+  }
+
+  for (const m of text.matchAll(/\b([A-Za-z_]\w*)\s*(?:::\s*<[^>;\n]*>\s*)?\(/g)) {
+    const callee = m[1]
+    if (RUST_KEYWORDS_AND_BUILTINS.has(callee)) continue
+    recordApiCall(result.apiCalls, callee, lineOf(text, m.index))
+  }
+  return result
+}
+
 /** Analyzes one code snippet with the rules for its language. */
 function analyzeCode(code: string, language: FenceLanguage): CodeAnalysis {
   switch (language) {
     case 'other':
       return emptyAnalysis()
     case 'python':
-      return analyzeImports(code, scanPythonImports(code))
+      return analyzePython(code)
     case 'go':
-      return analyzeImports(code, scanGoImports(code))
+      return analyzeGo(code)
     case 'rust':
-      return analyzeImports(code, scanRustImports(code))
+      return analyzeRust(code)
     case 'js':
       return analyzeJavaScript(code)
     case 'untagged': {
       const result = analyzeJavaScript(code)
-      const python = analyzeImports(code, scanPythonImports(code))
+      const python = analyzePython(code)
       for (const [pkg, entry] of python.packages) {
         if (!result.packages.has(pkg)) result.packages.set(pkg, entry)
       }
@@ -195,6 +362,9 @@ function analyzeCode(code: string, language: FenceLanguage): CodeAnalysis {
         const target = result.importedIdentifiers.get(pkg) ?? new Set<string>()
         for (const id of ids) target.add(id)
         result.importedIdentifiers.set(pkg, target)
+      }
+      for (const [call, line] of python.apiCalls) {
+        if (!result.apiCalls.has(call)) result.apiCalls.set(call, line)
       }
       result.unusedImportLines.push(...python.unusedImportLines)
       return result
@@ -366,6 +536,7 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     tier: ReferenceSubstantiation,
     proseOk: boolean,
     location: SourceLocation,
+    ecosystem?: Ecosystem,
   ) => {
     result.packages.add(pkg)
     if (!result.locations.packages[pkg]) result.locations.packages[pkg] = location
@@ -376,6 +547,7 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
         substantiation: tier,
         substantiatedByProse: proseOk,
         location,
+        ...(ecosystem ? { ecosystem } : {}),
       } satisfies PackageReference
       return
     }
@@ -384,13 +556,16 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     ) {
       existing.substantiation = tier
     }
+    if (!existing.ecosystem && ecosystem) {
+      existing.ecosystem = ecosystem
+    }
     existing.substantiatedByProse = existing.substantiatedByProse || proseOk
   }
 
   /** Folds one snippet's analysis in, resolving snippet lines through `at`. */
   const mergeAnalysis = (analysis: CodeAnalysis, proseOk: boolean, at: Locator) => {
-    for (const [pkg, { tier, line }] of analysis.packages) {
-      recordRef(pkg, tier, proseOk, at(line))
+    for (const [pkg, { tier, line, ecosystem }] of analysis.packages) {
+      recordRef(pkg, tier, proseOk, at(line), ecosystem)
     }
     for (const [pkg, ids] of analysis.importedIdentifiers) {
       const target = result.importedIdentifiers[pkg] ?? new Set<string>()
@@ -444,7 +619,11 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
           packages: new Map(
             [...analysis.packages].map(([pkg, entry]) => [
               pkg,
-              { tier: 'mention' as const, line: entry.line },
+              {
+                tier: 'mention' as const,
+                line: entry.line,
+                ecosystem: entry.ecosystem,
+              },
             ]),
           ),
           unusedImportLines: [],

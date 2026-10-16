@@ -1,19 +1,95 @@
+import * as fs from 'fs'
+import * as path from 'path'
 import { isPythonStdlib } from '../pythonStdlib.js'
 import { parseToml, tomlStringArray, tomlTable, type TomlTable } from '../toml.js'
 import type { ImportBinding, SourceImport } from './types.js'
 
 /**
- * Python: `pyproject.toml` / `requirements*.txt` declare, `import` and
- * `from ... import` use. Distribution names are PEP 503-normalized
- * (`Django` -> `django`, `python_dotenv` -> `python-dotenv`); import names are
- * whatever the source writes. The two coincide for most packages, and when
- * they do not (`scikit-learn` / `sklearn`) the import side of the ground truth
- * still matches a skill that imports the same module the repo does.
+ * Python: `pyproject.toml` / `requirements*.txt` / `Pipfile` / `setup.cfg` /
+ * `setup.py` declare, `import` and `from ... import` use. Distribution names
+ * are PEP 503-normalized (`Django` -> `django`, `python_dotenv` ->
+ * `python-dotenv`); import names are mapped through `PYTHON_IMPORT_TO_DIST`
+ * for known mismatches (`sklearn` -> `scikit-learn`, `PIL` -> `pillow`, etc.)
+ * and PEP 503-normalized so declared and imported package names align.
  */
 
 /** PEP 503 name normalization. */
 export function normalizePythonName(name: string): string {
   return name.toLowerCase().replace(/[-_.]+/g, '-')
+}
+
+/**
+ * Top PyPI distribution-name vs top-level import-name mismatches. Keys are
+ * lowercase import names (or two-segment namespace imports like
+ * `google.protobuf`); values are PEP 503-normalized distribution names.
+ */
+export const PYTHON_IMPORT_TO_DIST: Readonly<Record<string, string>> = {
+  sklearn: 'scikit-learn',
+  skimage: 'scikit-image',
+  pil: 'pillow',
+  cv2: 'opencv-python',
+  bs4: 'beautifulsoup4',
+  yaml: 'pyyaml',
+  dotenv: 'python-dotenv',
+  jwt: 'pyjwt',
+  dateutil: 'python-dateutil',
+  attr: 'attrs',
+  git: 'gitpython',
+  crypto: 'pycryptodome',
+  cryptodome: 'pycryptodome',
+  nacl: 'pynacl',
+  serial: 'pyserial',
+  usb: 'pyusb',
+  magic: 'python-magic',
+  slugify: 'python-slugify',
+  docx: 'python-docx',
+  pptx: 'python-pptx',
+  xlsxwriter: 'xlsxwriter',
+  multipart: 'python-multipart',
+  jose: 'python-jose',
+  fitz: 'pymupdf',
+  graphql: 'graphql-core',
+  openssl: 'pyopenssl',
+  zmq: 'pyzmq',
+  websocket: 'websocket-client',
+  mysqldb: 'mysqlclient',
+  tortoise: 'tortoise-orm',
+  pydantic_settings: 'pydantic-settings',
+  'google.protobuf': 'protobuf',
+  'google.cloud': 'google-cloud',
+  memcache: 'python-memcached',
+  ldap: 'python-ldap',
+  daemon: 'python-daemon',
+  whois: 'python-whois',
+  telegram: 'python-telegram-bot',
+  discord: 'discord-py',
+  github: 'pygithub',
+  socks: 'pysocks',
+  dns: 'dnspython',
+  cairo: 'pycairo',
+  gi: 'pygobject',
+  wx: 'wxpython',
+  impala: 'impyla',
+  levenshtein: 'python-levenshtein',
+  editor: 'python-editor',
+  rapidjson: 'python-rapidjson',
+  pythonjsonlogger: 'python-json-logger',
+  decouple: 'python-decouple',
+   box: 'python-box',
+  dateparser: 'dateparser',
+   pinecone: 'pinecone-client',
+}
+
+/** Resolves a Python import path (`sklearn.ensemble`, `PIL`, `pydantic_settings`) to its normalized distribution name. */
+export function resolvePythonDistName(modulePath: string): string {
+  const parts = modulePath.split('.')
+  if (parts.length >= 2) {
+    const twoSeg = `${parts[0]}.${parts[1]}`.toLowerCase()
+    if (twoSeg in PYTHON_IMPORT_TO_DIST) return PYTHON_IMPORT_TO_DIST[twoSeg]
+  }
+  const top = (parts[0] ?? '').toLowerCase()
+  if (top in PYTHON_IMPORT_TO_DIST) return PYTHON_IMPORT_TO_DIST[top]
+  return normalizePythonName(top)
 }
 
 /**
@@ -104,18 +180,165 @@ export function readPyproject(text: string): Record<string, string> {
   return deps
 }
 
-/** Declared dependencies from a requirements.txt-style file. */
-export function readRequirements(text: string): Record<string, string> {
+export interface ReadRequirementsOptions {
+  /** Path to the requirements file on disk, used to resolve `-r` / `-c` includes relative to its directory. */
+  filePath?: string
+  /** Already-visited absolute file paths so recursive `-r` / `-c` includes are cycle-safe. */
+  visited?: Set<string>
+}
+
+/**
+ * Declared dependencies from a requirements.txt-style file. When `options.filePath`
+ * is provided, `-r` / `--requirement` and `-c` / `--constraint` includes are
+ * resolved relative to the file's directory with cycle detection.
+ */
+export function readRequirements(
+  text: string,
+  options: ReadRequirementsOptions = {},
+): Record<string, string> {
   const deps: Record<string, string> = {}
-  // Backslash continuations join lines; comments and pip options are dropped.
+  const visited = options.visited ?? new Set<string>()
+  if (options.filePath) {
+    visited.add(path.resolve(options.filePath))
+  }
+
+  // Backslash continuations join lines; inline comments are stripped.
   const joined = text.replace(/\\\r?\n/g, ' ')
-  addRequirementList(
-    deps,
-    joined
-      .split('\n')
-      .map(line => line.replace(/\s#.*$/, '').trim())
-      .filter(line => line && !line.startsWith('#') && !line.startsWith('-')),
-  )
+  const lines = joined
+    .split('\n')
+    .map(line => line.replace(/\s#.*$/, '').trim())
+    .filter(line => line && !line.startsWith('#'))
+
+  for (const line of lines) {
+    const includeMatch = line.match(
+      /^(?:-r|--requirement|-c|--constraint)(?:=|\s+)(.+)$/,
+    )
+    if (includeMatch) {
+      if (!options.filePath) continue
+      const rawTarget = includeMatch[1].trim().replace(/^['"]|['"]$/g, '')
+      if (!rawTarget) continue
+      const targetPath = path.resolve(path.dirname(options.filePath), rawTarget)
+      if (visited.has(targetPath)) continue
+      visited.add(targetPath)
+      let includedText: string
+      try {
+        includedText = fs.readFileSync(targetPath, 'utf-8')
+      } catch {
+        continue
+      }
+      const nested = readRequirements(includedText, {
+        filePath: targetPath,
+        visited,
+      })
+      for (const [name, version] of Object.entries(nested)) {
+        if (!(name in deps)) deps[name] = version
+      }
+      continue
+    }
+    if (line.startsWith('-')) continue
+    const parsed = parseRequirement(line)
+    if (parsed && !(parsed.name in deps)) {
+      deps[parsed.name] = parsed.version
+    }
+  }
+  return deps
+}
+
+/** Declared dependencies from a Pipfile (`[packages]` and `[dev-packages]`). */
+export function readPipfile(text: string): Record<string, string> {
+  const deps: Record<string, string> = {}
+  let root: TomlTable
+  try {
+    root = parseToml(text)
+  } catch {
+    return deps
+  }
+  addDependencyTable(deps, tomlTable(root, 'packages'))
+  addDependencyTable(deps, tomlTable(root, 'dev-packages'))
+  return deps
+}
+
+/** Declared dependencies from a static `setup.cfg` (`[options]` `install_requires` and `[options.extras_require]`). */
+export function readSetupCfg(text: string): Record<string, string> {
+  const deps: Record<string, string> = {}
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  let section = ''
+  let collectingReqKey = false
+
+  const addSpecChunk = (chunk: string) => {
+    for (const part of chunk.split('\n')) {
+      const cleaned = part.replace(/\s#.*$/, '').trim()
+      if (!cleaned || cleaned.startsWith('#')) continue
+      const parsed = parseRequirement(cleaned)
+      if (parsed && !(parsed.name in deps)) deps[parsed.name] = parsed.version
+    }
+  }
+
+  for (const raw of lines) {
+    const trimmed = raw.trim()
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) continue
+    const secMatch = trimmed.match(/^\[([^\]]+)\]$/)
+    if (secMatch) {
+      section = secMatch[1].trim().toLowerCase()
+      collectingReqKey = false
+      continue
+    }
+
+    const isContinuation = /^[ \t]+/.test(raw)
+    if (isContinuation && collectingReqKey) {
+      addSpecChunk(trimmed)
+      continue
+    }
+
+    const kvMatch = raw.match(/^([A-Za-z0-9_.-]+)\s*[:=]\s*(.*)$/)
+    if (!kvMatch) {
+      collectingReqKey = false
+      continue
+    }
+    const key = kvMatch[1].toLowerCase()
+    const val = kvMatch[2].trim()
+
+    if (
+      section === 'options' &&
+      (key === 'install_requires' || key === 'setup_requires' || key === 'tests_require')
+    ) {
+      collectingReqKey = true
+      if (val) addSpecChunk(val)
+    } else if (section === 'options.extras_require') {
+      collectingReqKey = true
+      if (val) addSpecChunk(val)
+    } else {
+      collectingReqKey = false
+    }
+  }
+  return deps
+}
+
+/** Declared dependencies from static `install_requires` and `extras_require` literals in `setup.py`. */
+export function readSetupPy(text: string): Record<string, string> {
+  const deps: Record<string, string> = {}
+  // Strip line comments so commented-out requirements are ignored while keeping string literals intact.
+  const withoutComments = text.replace(/^[ \t]*#.*$/gm, '')
+
+  const extractListStrings = (listBody: string) => {
+    for (const m of listBody.matchAll(/(['"])((?:\\.|(?!\1)[^\\\r\n])+)\1/g)) {
+      const parsed = parseRequirement(m[2])
+      if (parsed && !(parsed.name in deps)) deps[parsed.name] = parsed.version
+    }
+  }
+
+  for (const m of withoutComments.matchAll(
+    /\b(?:install_requires|setup_requires|tests_require)\s*=\s*\[([\s\S]*?)\]/g,
+  )) {
+    extractListStrings(m[1])
+  }
+
+  for (const m of withoutComments.matchAll(/\bextras_require\s*=\s*\{([\s\S]*?)\}/g)) {
+    for (const listMatch of m[1].matchAll(/\[([\s\S]*?)\]/g)) {
+      extractListStrings(listMatch[1])
+    }
+  }
+
   return deps
 }
 
@@ -124,7 +347,7 @@ export function readRequirements(text: string): Record<string, string> {
  * docstring that quotes an import does not count as one. Triple-quoted
  * strings are tracked across lines; single-line strings are blanked.
  */
-function stripPythonStringsAndComments(source: string): string {
+export function stripPythonStringsAndComments(source: string): string {
   let out = ''
   let i = 0
   const n = source.length
@@ -172,7 +395,7 @@ function pythonPackage(module: string, options: PythonScanOptions): string {
   if (!top || module.startsWith('.')) return ''
   if (isPythonStdlib(top)) return ''
   if (options.localModules?.has(top)) return ''
-  return top
+  return resolvePythonDistName(module)
 }
 
 /** `import a.b as c, d` — one entry per comma-separated module. */

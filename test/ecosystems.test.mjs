@@ -1,14 +1,26 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, test } from 'node:test'
-import { goPackageName, readGoMod, scanGoImports } from '../dist/ecosystems/go.js'
+import { goPackageName, readGoMod, readGoWork, scanGoImports } from '../dist/ecosystems/go.js'
 import {
   normalizePythonName,
   parseRequirement,
+  readPipfile,
   readPyproject,
   readRequirements,
+  readSetupCfg,
+  readSetupPy,
+  resolvePythonDistName,
   scanPythonImports,
 } from '../dist/ecosystems/python.js'
-import { readCargoToml, rustCrateName, scanRustImports } from '../dist/ecosystems/rust.js'
+import {
+  readCargoManifest,
+  readCargoToml,
+  rustCrateName,
+  scanRustImports,
+} from '../dist/ecosystems/rust.js'
 import { lineOf } from '../dist/ecosystems/types.js'
 import { parseToml } from '../dist/toml.js'
 
@@ -100,6 +112,98 @@ coverage = "^7"
     assert.deepEqual(deps, { django: '>=4.2', numpy: '==1.26', celery: '*' })
   })
 
+  test('follows -r and -c includes relative to filePath with cycle protection', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-req-'))
+    try {
+      const aPath = path.join(dir, 'requirements.txt')
+      const bPath = path.join(dir, 'base.txt')
+      fs.writeFileSync(aPath, '-r base.txt\n--constraint missing.txt\nfastapi>=0.110\n')
+      fs.writeFileSync(bPath, '-r requirements.txt\npydantic>=2.0\n')
+      const deps = readRequirements(fs.readFileSync(aPath, 'utf-8'), { filePath: aPath })
+      assert.deepEqual(deps, { pydantic: '>=2.0', fastapi: '>=0.110' })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('reads Pipfile, setup.cfg and setup.py manifests', () => {
+    const pipfileDeps = readPipfile(`
+[packages]
+requests = ">=2.31"
+uvicorn = { version = "^0.29", extras = ["standard"] }
+local_pkg = { path = "./local" }
+[dev-packages]
+pytest = "*"
+`)
+    assert.deepEqual(pipfileDeps, {
+      requests: '>=2.31',
+      uvicorn: '^0.29',
+      'local-pkg': 'path:./local',
+      pytest: '*',
+    })
+
+    const cfgDeps = readSetupCfg(`
+[metadata]
+name = demo
+
+[options]
+install_requires =
+    sqlalchemy>=2.0
+    pydantic>=2.5 # inline comment
+
+[options.extras_require]
+test =
+    pytest>=8.0
+`)
+    assert.deepEqual(cfgDeps, {
+      sqlalchemy: '>=2.0',
+      pydantic: '>=2.5',
+      pytest: '>=8.0',
+    })
+
+    const pyDeps = readSetupPy(`
+from setuptools import setup
+
+setup(
+    name="demo",
+    install_requires=[
+        "celery>=5.3",
+        "redis>=5.0",
+    ],
+    extras_require={
+        "dev": ["pytest>=8.0"],
+    },
+)
+`)
+    assert.deepEqual(pyDeps, {
+      celery: '>=5.3',
+      redis: '>=5.0',
+      pytest: '>=8.0',
+    })
+  })
+
+  test('maps PyPI import names that differ from their distribution names', () => {
+    assert.equal(resolvePythonDistName('sklearn.ensemble'), 'scikit-learn')
+    assert.equal(resolvePythonDistName('PIL.Image'), 'pillow')
+    assert.equal(resolvePythonDistName('cv2'), 'opencv-python')
+    assert.equal(resolvePythonDistName('bs4'), 'beautifulsoup4')
+    assert.equal(resolvePythonDistName('yaml'), 'pyyaml')
+    assert.equal(resolvePythonDistName('dotenv'), 'python-dotenv')
+    assert.equal(resolvePythonDistName('jwt'), 'pyjwt')
+    assert.equal(resolvePythonDistName('dateutil.parser'), 'python-dateutil')
+    assert.equal(resolvePythonDistName('google.protobuf.json_format'), 'protobuf')
+
+    const imports = scanPythonImports(
+      'from sklearn.ensemble import RandomForestClassifier\nimport PIL.Image\nimport yaml\nfrom distutils.core import setup\n',
+    )
+    assert.deepEqual(packages(imports).filter(Boolean), [
+      'distutils',
+      'pillow',
+      'pyyaml',
+      'scikit-learn',
+    ])
+  })
+
   test('scans imports, skips stdlib, relative and local modules, strings and comments', () => {
     const source = [
       '"""docstring says import flask"""',
@@ -184,6 +288,27 @@ replace github.com/gin-gonic/gin => ../gin
       'github.com/redis/go-redis': 'v9.5.1',
       'github.com/stretchr/testify': 'v1.9.0',
     })
+    assert.deepEqual(mod.indirect, {
+      'golang.org/x/sync': 'v0.7.0',
+    })
+    assert.deepEqual(mod.replace, {
+      'github.com/gin-gonic/gin': '../gin',
+    })
+  })
+
+  test('reads go.work use and replace directives', () => {
+    const work = readGoWork(`
+go 1.22
+
+use (
+\t./api
+\t./worker
+)
+use ./shared
+replace example.com/shared => ./shared
+`)
+    assert.deepEqual(work.use, ['./api', './worker', './shared'])
+    assert.deepEqual(work.replace, { 'example.com/shared': './shared' })
   })
 
   test('scans single and block imports with aliases, ignoring comments', () => {
@@ -255,6 +380,27 @@ anyhow = "1"
       nix: '0.28',
       anyhow: '1',
     })
+  })
+
+  test('ignores [patch] and [replace] tables and tracks local path dependencies', () => {
+    const manifest = readCargoManifest(`
+[package]
+name = "worker-service"
+[workspace]
+members = ["crates/*"]
+[dependencies]
+tokio = "1"
+shared-core = { path = "../shared-core" }
+[patch.crates-io]
+tokio = { path = "../patched-tokio" }
+[replace]
+"serde:1.0.0" = { git = "https://example.com/serde" }
+`)
+    assert.equal(manifest.packageName, 'worker_service')
+    assert.deepEqual(manifest.workspaceMembers, ['crates/*'])
+    assert.deepEqual(manifest.localPathDeps, ['shared_core'])
+    assert.equal(manifest.dependencies.tokio, '1')
+    assert.ok(!('serde' in manifest.dependencies))
   })
 
   test('scans use trees, extern crate and bare paths, ignoring std/crate/self/super', () => {

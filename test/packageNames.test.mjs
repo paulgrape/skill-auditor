@@ -54,4 +54,17 @@ describe('topLevelPackage', () => {
       assert.equal(topLevelPackage(specifier), '', specifier)
     }
   })
+
+  test('strips npm: and jsr: registry prefixes and embedded version ranges', () => {
+    assert.equal(topLevelPackage('npm:zod'), 'zod')
+    assert.equal(topLevelPackage('npm:zod@^3.22.0'), 'zod')
+    assert.equal(topLevelPackage('npm:zod@^3.22.0/lib'), 'zod')
+    assert.equal(
+      topLevelPackage('npm:@tanstack/react-query@^5.0.0/devtools'),
+      '@tanstack/react-query',
+    )
+    assert.equal(topLevelPackage('jsr:@std/path@^1.0.0/posix'), '@std/path')
+    assert.equal(isPackageSpecifier('npm:zod@^3.22.0'), true)
+    assert.equal(isPackageSpecifier('jsr:@std/path@^1.0.0'), true)
+  })
 })

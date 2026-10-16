@@ -1,5 +1,7 @@
 import {
   categoriesForPackage,
+  ecosystemsForRepoPackage,
+  ecosystemsForSkillPackage,
   MUST_HAVE_CHECKLISTS,
   packageInCategory,
 } from './taxonomy.js'
@@ -10,6 +12,12 @@ import type { GapFinding, GapReport, ImportEvidence, RepoReality } from './types
 /** Max evidence entries attached to a single gap finding. */
 const MAX_EVIDENCE_PER_GAP = 10
 
+function isIndirectOnly(pkg: string, repo: RepoReality): boolean {
+  return Boolean(
+    repo.indirectDeps && pkg in repo.indirectDeps && !(pkg in repo.declaredDeps),
+  )
+}
+
 function repoCategories(repo: RepoReality): string[] {
   const cats = new Set<string>()
   const pkgs = new Set([
@@ -17,7 +25,10 @@ function repoCategories(repo: RepoReality): string[] {
     ...Object.keys(repo.usedImports),
   ])
   for (const pkg of pkgs) {
-    for (const cat of categoriesForPackage(pkg)) cats.add(cat)
+    if (isIndirectOnly(pkg, repo)) continue
+    for (const cat of categoriesForPackage(pkg, ecosystemsForRepoPackage(pkg, repo))) {
+      cats.add(cat)
+    }
   }
   return [...cats].sort()
 }
@@ -26,10 +37,15 @@ function repoCategories(repo: RepoReality): string[] {
 export function packagesForCategory(category: string, repo: RepoReality): string[] {
   const pkgs = new Set<string>()
   for (const pkg of Object.keys(repo.usedImports)) {
-    if (packageInCategory(pkg, category)) pkgs.add(pkg)
+    if (isIndirectOnly(pkg, repo)) continue
+    if (packageInCategory(pkg, category, ecosystemsForRepoPackage(pkg, repo))) {
+      pkgs.add(pkg)
+    }
   }
   for (const pkg of Object.keys(repo.declaredDeps)) {
-    if (packageInCategory(pkg, category)) pkgs.add(pkg)
+    if (packageInCategory(pkg, category, ecosystemsForRepoPackage(pkg, repo))) {
+      pkgs.add(pkg)
+    }
   }
   return [...pkgs].sort()
 }
@@ -66,13 +82,17 @@ function buildRecommendation(
   return fallback
 }
 
-function categoriesFromSkillDirs(skillDirs: string[]): Set<string> {
+function categoriesFromSkillDirs(
+  skillDirs: string[],
+  repo: RepoReality,
+): Set<string> {
   const cats = new Set<string>()
   for (const dir of skillDirs) {
     try {
       const skill = extractSkillIdentifiers(dir)
       for (const pkg of skill.packages) {
-        for (const cat of categoriesForPackage(pkg)) cats.add(cat)
+        const ecos = ecosystemsForSkillPackage(pkg, skill, repo)
+        for (const cat of categoriesForPackage(pkg, ecos)) cats.add(cat)
       }
       for (const cat of skill.categories) cats.add(cat)
     } catch {
@@ -112,7 +132,9 @@ export function detectGaps(
 ): GapReport {
   const installedSkillDirs = findSkillDirs(skillRoots)
   const projectCategories = repoCategories(repo)
-  const coveredCategories = [...categoriesFromSkillDirs(installedSkillDirs)].sort()
+  const coveredCategories = [
+    ...categoriesFromSkillDirs(installedSkillDirs, repo),
+  ].sort()
   const covered = new Set(coveredCategories)
   const gaps: GapFinding[] = []
 

@@ -4,6 +4,7 @@ import { firstPackageLocation, repoHasPackage } from './diff.js'
 import { frontmatterString, parseFrontmatter } from './frontmatter.js'
 import {
   categoriesForPackage,
+  ecosystemsForSkillPackage,
   FRESHNESS_PENALTY,
   LOW_SCORE_THRESHOLD,
   MIXED_SKILL_THRESHOLD,
@@ -55,10 +56,11 @@ export function classifySkillKind(skill: SkillIdentifiers): SkillKind {
   return 'technical'
 }
 
-function skillCategories(skill: SkillIdentifiers): Set<string> {
+function skillCategories(skill: SkillIdentifiers, repo?: RepoReality): Set<string> {
   const cats = new Set<string>()
   for (const pkg of skill.packages) {
-    for (const cat of categoriesForPackage(pkg)) cats.add(cat)
+    const ecos = ecosystemsForSkillPackage(pkg, skill, repo)
+    for (const cat of categoriesForPackage(pkg, ecos)) cats.add(cat)
   }
   return cats
 }
@@ -69,8 +71,8 @@ function skillCategories(skill: SkillIdentifiers): Set<string> {
  * mega-skill — both are worse than focused, per-concern skills. Portfolio
  * coverage across categories is measured by the `gaps` command, NOT here.
  */
-function computeFocus(skill: SkillIdentifiers): number {
-  const cats = skillCategories(skill).size
+function computeFocus(skill: SkillIdentifiers, repo?: RepoReality): number {
+  const cats = skillCategories(skill, repo).size
   if (cats <= 2) return 1
   return 2 / cats
 }
@@ -170,7 +172,7 @@ export function scoreSkill(
   }
 
   const alignment = report.alignmentScore
-  const focus = computeFocus(skill)
+  const focus = computeFocus(skill, repo)
   const specificity = computeSpecificity(skill, repo, report)
 
   const breakdown: ScoreBreakdown = {

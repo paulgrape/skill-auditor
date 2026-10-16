@@ -1,3 +1,5 @@
+import type { Ecosystem } from './types.js'
+
 /**
  * The curated tables behind the audit, kept free of logic so `docs` can print
  * them verbatim and a project can extend them from `.skill-auditor.json`.
@@ -77,6 +79,11 @@ export const BASE_CATEGORY_TAXONOMY: Record<string, string[]> = {
     'arktype',
     '@sinclair/typebox',
     'class-validator',
+    'pydantic',
+    'marshmallow',
+    'go-playground/validator',
+    'github.com/go-playground/validator',
+    'garde',
   ],
   styling: [
     'tailwindcss',
@@ -102,6 +109,19 @@ export const BASE_CATEGORY_TAXONOMY: Record<string, string[]> = {
     '@mikro-orm/core',
     'mongoose',
     'knex',
+    'sqlalchemy',
+    'sqlmodel',
+    'tortoise-orm',
+    'peewee',
+    'gorm',
+    'gorm.io/gorm',
+    'ent',
+    'entgo.io/ent',
+    'sqlx',
+    'github.com/jmoiron/sqlx',
+    'diesel',
+    'sea-orm',
+    'sea_orm',
   ],
   'component-lib': [
     '@radix-ui/react-dialog',
@@ -135,6 +155,15 @@ export const BASE_CATEGORY_TAXONOMY: Record<string, string[]> = {
     'cypress',
     'playwright',
     '@playwright/test',
+    'pytest',
+    'hypothesis',
+    'testify',
+    'github.com/stretchr/testify',
+    'gomock',
+    'go.uber.org/mock',
+    'github.com/golang/mock',
+    'mockall',
+    'proptest',
   ],
   i18n: [
     'i18next',
@@ -147,6 +176,69 @@ export const BASE_CATEGORY_TAXONOMY: Record<string, string[]> = {
     'vue-i18n',
     '@nuxtjs/i18n',
     'paraglide-js',
+  ],
+  'web-framework': [
+    'fastapi',
+    'flask',
+    'django',
+    'gin',
+    'github.com/gin-gonic/gin',
+    'echo',
+    'github.com/labstack/echo',
+    'chi',
+    'github.com/go-chi/chi',
+    'fiber',
+    'github.com/gofiber/fiber',
+    'axum',
+    'actix-web',
+    'actix_web',
+    'rocket',
+  ],
+  'http-client': [
+    'httpx',
+    'requests',
+    'aiohttp',
+    'resty',
+    'github.com/go-resty/resty',
+    'reqwest',
+  ],
+  'task-queue': [
+    'celery',
+    'rq',
+    'dramatiq',
+    'arq',
+    'asynq',
+    'github.com/hibiken/asynq',
+  ],
+  serialization: [
+    'serde',
+    'serde_json',
+    'msgspec',
+    'orjson',
+  ],
+  logging: [
+    'structlog',
+    'loguru',
+    'zap',
+    'go.uber.org/zap',
+    'zerolog',
+    'github.com/rs/zerolog',
+    'tracing',
+    'tracing_subscriber',
+  ],
+  cli: [
+    'typer',
+    'click',
+    'cobra',
+    'github.com/spf13/cobra',
+    'clap',
+  ],
+  config: [
+    'pydantic-settings',
+    'viper',
+    'github.com/spf13/viper',
+    'dynaconf',
+    'figment',
   ],
 }
 
@@ -162,6 +254,13 @@ export const BASE_MUST_HAVE_CHECKLISTS: Record<string, string[]> = {
     'validation',
     'styling',
     'testing',
+  ],
+  backend: [
+    'web-framework',
+    'orm-db',
+    'validation',
+    'testing',
+    'logging',
   ],
   // Website Specification domains (https://specification.website). These are
   // production-web-quality domains, not npm-package categories — coverage
@@ -202,6 +301,12 @@ export interface DeprecatedApiRule {
    * same package as the deprecated ones.
    */
   onlyIfRepoImports?: { package: string; identifier: string }[]
+  /**
+   * Alternatively, the repo must belong to one of these ecosystems (used when
+   * the successor API is in the language's standard library, e.g. Go `io`/`os`
+   * or `errors`/`fmt`, Rust `std::sync::OnceLock`, Python 3.12+ stdlib/setuptools).
+   */
+  onlyIfRepoEcosystem?: Ecosystem | Ecosystem[]
 }
 
 /**
@@ -265,5 +370,116 @@ export const DEPRECATED_API_RULES: DeprecatedApiRule[] = [
     message:
       'Skill uses redux createStore; project uses Redux Toolkit, where configureStore and createSlice are the supported API.',
     onlyIfRepoUses: '@reduxjs/toolkit',
+  },
+  // Go deprecations
+  {
+    framework: 'go',
+    deprecatedImportSpecifiers: ['io/ioutil'],
+    deprecatedApiCalls: [
+      'ioutil.ReadAll',
+      'ioutil.ReadFile',
+      'ioutil.WriteFile',
+      'ioutil.TempDir',
+      'ioutil.TempFile',
+      'ioutil.NopCloser',
+      'ioutil.Discard',
+    ],
+    message:
+      'Skill uses io/ioutil (deprecated since Go 1.16); use io and os directly (io.ReadAll, os.ReadFile, os.WriteFile, os.MkdirTemp, os.CreateTemp).',
+    onlyIfRepoUses: ['io', 'os'],
+    onlyIfRepoEcosystem: 'go',
+  },
+  {
+    framework: 'go',
+    deprecatedImportSpecifiers: ['github.com/pkg/errors'],
+    deprecatedApiCalls: [
+      'errors.Wrap',
+      'errors.Wrapf',
+      'errors.WithStack',
+      'errors.WithMessage',
+      'errors.Cause',
+    ],
+    message:
+      'Skill uses github.com/pkg/errors (archived); use standard library error wrapping (fmt.Errorf with %w, errors.Is, errors.As, errors.Join).',
+    onlyIfRepoUses: ['errors', 'fmt'],
+    onlyIfRepoEcosystem: 'go',
+  },
+  // Rust deprecations
+  {
+    framework: 'rust',
+    deprecatedImportSpecifiers: ['failure'],
+    message:
+      'Skill uses the deprecated failure crate; project uses thiserror / anyhow for error handling.',
+    onlyIfRepoUses: ['thiserror', 'anyhow'],
+  },
+  {
+    framework: 'rust',
+    deprecatedImportSpecifiers: ['structopt'],
+    deprecatedApiCalls: ['StructOpt'],
+    message:
+      'Skill uses structopt; project uses clap (v3+ integrates derive macros via #[derive(Parser)]).',
+    onlyIfRepoUses: 'clap',
+  },
+  {
+    framework: 'rust',
+    deprecatedImportSpecifiers: ['async-std', 'async_std'],
+    message:
+      'Skill uses async-std (discontinued); project uses tokio / smol as its async runtime.',
+    onlyIfRepoUses: ['tokio', 'smol'],
+  },
+  {
+    framework: 'rust',
+    deprecatedImportSpecifiers: ['lazy_static'],
+    deprecatedApiCalls: ['lazy_static'],
+    message:
+      'Skill uses lazy_static; prefer std::sync::LazyLock / std::sync::OnceLock (or once_cell).',
+    onlyIfRepoUses: 'once_cell',
+    onlyIfRepoEcosystem: 'cargo',
+  },
+  // Python deprecations
+  {
+    framework: 'pydantic',
+    deprecatedImportSpecifiers: ['pydantic.v1'],
+    message:
+      'Skill imports from pydantic.v1; project uses Pydantic v2 (BaseModel, field_validator, model_dump, ConfigDict).',
+    onlyIfRepoUses: 'pydantic',
+  },
+  {
+    framework: 'pydantic',
+    deprecatedApiCalls: [
+      '.dict()',
+      '@validator',
+      'validator',
+      '@root_validator',
+      'root_validator',
+      'class Config',
+      'parse_obj',
+      'parse_raw',
+    ],
+    message:
+      'Skill uses Pydantic v1 APIs (.dict(), @validator, class Config); project uses Pydantic v2 (model_dump(), @field_validator, model_config = ConfigDict(...)).',
+    onlyIfRepoUses: 'pydantic',
+  },
+  {
+    framework: 'python',
+    deprecatedImportSpecifiers: ['distutils'],
+    message:
+      'Skill imports distutils (removed in Python 3.12, PEP 632); use setuptools, packaging, or importlib.metadata.',
+    onlyIfRepoUses: ['setuptools', 'packaging', 'hatchling'],
+    onlyIfRepoEcosystem: 'python',
+  },
+  {
+    framework: 'sqlalchemy',
+    deprecatedApiCalls: ['Query', 'session.query'],
+    message:
+      'Skill uses legacy SQLAlchemy 1.x session.query() / Query API; project uses SQLAlchemy 2.0 style (select(), session.execute(), session.scalars()).',
+    onlyIfRepoUses: 'sqlalchemy',
+  },
+  {
+    framework: 'fastapi',
+    deprecatedApiCalls: ['on_event'],
+    message:
+      'Skill uses FastAPI @app.on_event("startup" | "shutdown") (deprecated); use an asynccontextmanager lifespan handler on FastAPI(lifespan=...).',
+    onlyIfRepoUses: 'fastapi',
   },
 ]

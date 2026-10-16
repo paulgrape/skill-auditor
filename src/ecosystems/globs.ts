@@ -16,8 +16,14 @@ export const SOURCE_GLOBS: Record<Ecosystem, string[]> = {
 /** Manifests each ecosystem's declared dependencies come from. */
 export const MANIFEST_GLOBS: Record<Ecosystem, string[]> = {
   npm: ['package.json', '**/package.json', 'pnpm-workspace.yaml'],
-  python: ['**/pyproject.toml', '**/requirements*.txt'],
-  go: ['**/go.mod'],
+  python: [
+    '**/pyproject.toml',
+    '**/requirements*.txt',
+    '**/Pipfile',
+    '**/setup.cfg',
+    '**/setup.py',
+  ],
+  go: ['**/go.mod', '**/go.work'],
   cargo: ['**/Cargo.toml'],
 }
 

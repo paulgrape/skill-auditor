@@ -1,4 +1,10 @@
-import { isTomlTable, parseToml, tomlTable, type TomlTable } from '../toml.js'
+import {
+  isTomlTable,
+  parseToml,
+  tomlStringArray,
+  tomlTable,
+  type TomlTable,
+} from '../toml.js'
 import type { ImportBinding, SourceImport } from './types.js'
 
 /**
@@ -24,7 +30,57 @@ export function rustCrateName(name: string): string {
   return name.replace(/-/g, '_')
 }
 
-/** Reads every dependency section of a Cargo.toml: crate name -> version. */
+export interface CargoManifest {
+  /** Normalized crate name from `[package].name`, if this Cargo.toml defines a package */
+  packageName: string | null
+  /** Workspace member globs from `[workspace].members` */
+  workspaceMembers: string[]
+  /** Declared dependencies from all dependency tables (`[patch]` is ignored) */
+  dependencies: Record<string, string>
+  /** Dependency crate names that point to a local `{ path = "..." }` */
+  localPathDeps: string[]
+}
+
+/**
+ * Reads `[package].name`, `[workspace].members`, and dependency sections of a
+ * Cargo.toml. `[patch]` and `[replace]` tables are intentionally ignored so
+ * source-location overrides do not introduce extra declared dependencies.
+ */
+export function readCargoManifest(text: string): CargoManifest {
+  const empty: CargoManifest = {
+    packageName: null,
+    workspaceMembers: [],
+    dependencies: {},
+    localPathDeps: [],
+  }
+  let root: TomlTable
+  try {
+    root = parseToml(text)
+  } catch {
+    return empty
+  }
+
+  const pkgTable = tomlTable(root, 'package')
+  const rawPkgName = pkgTable && typeof pkgTable.name === 'string' ? pkgTable.name : null
+  const packageName = rawPkgName ? rustCrateName(rawPkgName) : null
+  const workspaceMembers = tomlStringArray(root, 'workspace', 'members')
+  const dependencies = readCargoToml(text)
+  const localPathDeps = Object.entries(dependencies)
+    .filter(([, version]) => version.startsWith('path:'))
+    .map(([name]) => name)
+
+  return {
+    packageName,
+    workspaceMembers,
+    dependencies,
+    localPathDeps,
+  }
+}
+
+/**
+ * Reads every dependency section of a Cargo.toml: crate name -> version.
+ * `[patch]` and `[replace]` tables are ignored.
+ */
 export function readCargoToml(text: string): Record<string, string> {
   const deps: Record<string, string> = {}
   let root: TomlTable
@@ -66,7 +122,7 @@ export function readCargoToml(text: string): Record<string, string> {
 }
 
 /** Blanks comments (nested block comments included) and string literals. */
-function stripRustCommentsAndStrings(source: string): string {
+export function stripRustCommentsAndStrings(source: string): string {
   let out = ''
   let i = 0
   const n = source.length
@@ -202,10 +258,17 @@ export interface RustScanOptions {
    * since a bare path could just as well be a local module.
    */
   declaredCrates?: Set<string>
+  /**
+   * Workspace member crates and local `{ path = "..." }` dependencies that
+   * belong to the project itself and should not be reported as external
+   * dependencies.
+   */
+  localCrates?: Set<string>
 }
 
-function rustPackageName(root: string): string {
+function rustPackageName(root: string, localCrates?: Set<string>): string {
   if (!root || RUST_BUILTIN_ROOTS.has(root)) return ''
+  if (localCrates?.has(root)) return ''
   return root
 }
 
@@ -225,7 +288,7 @@ export function scanRustImports(
     for (const entry of flattenUseTree(m[1])) {
       if (!entry.path) continue
       const root = entry.path.split('::')[0] ?? ''
-      const packageName = rustPackageName(root)
+      const packageName = rustPackageName(root, options.localCrates)
       // A single-segment `use foo;` is a local module unless the project
       // declares a crate of that name; with no declaration list, keep it.
       if (
@@ -253,7 +316,7 @@ export function scanRustImports(
     imports.push({
       ecosystem: 'cargo',
       specifier: m[1],
-      packageName: rustPackageName(m[1]),
+      packageName: rustPackageName(m[1], options.localCrates),
       bindings: [{ source: m[1], local }],
       bindingsKnown: true,
       text: normalized.slice(m.index, m.index + m[0].length).trim(),
@@ -265,6 +328,7 @@ export function scanRustImports(
   if (options.declaredCrates) {
     for (const m of text.matchAll(PATH_USE_RE)) {
       const root = m[1]
+      if (options.localCrates?.has(root)) continue
       if (!options.declaredCrates.has(root) || seenBare.has(root)) continue
       // Skip roots already covered by a `use` line.
       if (imports.some(imp => imp.packageName === root)) continue

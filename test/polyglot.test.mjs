@@ -91,7 +91,9 @@ describe('polyglot skill', () => {
     assert.deepEqual(extracted.importedIdentifiers.serde, ['Deserialize', 'Serialize'])
     assert.deepEqual(extracted.importedIdentifiers['github.com/gin-gonic/gin'], ['gin'])
     assert.equal(extracted.codeEvidence.codeFences, 4)
-    assert.equal(extracted.apiCalls.length, 0)
+    assert.ok(extracted.apiCalls.includes('FastAPI'))
+    assert.ok(extracted.apiCalls.includes('gin.Default'))
+    assert.ok(extracted.apiCalls.includes('channel'))
   })
 
   test('every reference carries a file and line, bundled files included', () => {
@@ -124,8 +126,9 @@ describe('polyglot skill', () => {
     ])
     assert.equal(report.findings.length, 1)
     const [finding] = report.findings
-    assert.equal(finding.kind, 'unused-reference')
+    assert.equal(finding.kind, 'category-conflict')
     assert.equal(finding.skillReference, 'flask')
+    assert.equal(finding.repoReality, 'fastapi, github.com/gin-gonic/gin')
     assert.deepEqual(finding.location, {
       file: 'SKILL.md',
       line: 74,
@@ -144,7 +147,7 @@ describe('polyglot skill', () => {
       'sarif',
     ])
     const [result] = sarif.runs[0].results
-    assert.equal(result.ruleId, 'unused-reference')
+    assert.equal(result.ruleId, 'category-conflict')
     const location = result.locations[0].physicalLocation
     assert.match(location.artifactLocation.uri, /polyglot-skill\/SKILL\.md$/)
     assert.equal(location.region.startLine, 74)

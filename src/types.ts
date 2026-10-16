@@ -35,6 +35,12 @@ export interface RepoReality {
   usedIdentifiers: Record<string, Set<string>>
   /** Package name -> concrete import usages with file paths and examples */
   importEvidence: Record<string, ImportEvidence[]>
+  /**
+   * Go `// indirect` requirements from `go.mod` that are not declared as
+   * direct requirements. Kept out of `declaredDeps` so direct-only stack
+   * semantics hold, and used to suggest `go mod tidy` when referenced.
+   */
+  indirectDeps?: Record<string, string>
 }
 
 /**
@@ -68,6 +74,8 @@ export interface PackageReference {
   substantiatedByProse: boolean
   /** First place the package is referenced */
   location: SourceLocation
+  /** Ecosystem inferred from the code fence or script where the package was imported */
+  ecosystem?: Ecosystem
 }
 
 /** First occurrence of each extracted reference. */

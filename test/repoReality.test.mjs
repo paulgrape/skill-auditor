@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, test } from 'node:test'
 import { parseJson } from './helpers.mjs'
 
@@ -62,13 +65,11 @@ describe('multi-module repositories', () => {
     assert.deepEqual(scan.usedIdentifiers['github.com/robfig/cron'], ['cron'])
   })
 
-  test('requirements.txt -r includes are dropped, not followed', () => {
-    // Following -r/-c is a 2.1 item; this fixture pins the 2.0 contract so a
-    // later change cannot silently start treating include files as the stack.
+  test('requirements.txt -r includes are followed relative to the file', () => {
     const scan = parseJson(['scan', './fixtures/python-requirements-include', '--no-cache'])
     assert.deepEqual(scan.ecosystems, ['python'])
     assert.equal(scan.declaredDeps.flask, '>=3.0')
-    assert.ok(!('requests' in scan.declaredDeps))
+    assert.equal(scan.declaredDeps.requests, '>=2.32')
     assert.deepEqual(Object.keys(scan.usedImports).sort(), ['flask', 'requests'])
   })
 
@@ -79,11 +80,79 @@ describe('multi-module repositories', () => {
     assert.equal(scan.declaredDeps.serde, '1')
     assert.equal(scan.declaredDeps.anyhow, '1')
     assert.equal(scan.declaredDeps.clap, '4')
+    assert.ok(!('wscore' in scan.declaredDeps), 'workspace member path dep is local')
+    assert.ok(!('cli' in scan.declaredDeps), 'workspace member crate is local')
     assert.deepEqual(scan.usedImports.serde, ['serde'])
     assert.deepEqual(scan.usedImports.anyhow, ['anyhow'])
     assert.deepEqual(scan.usedImports.clap, ['clap'])
     assert.deepEqual(scan.usedIdentifiers.clap, ['Parser'])
+    assert.ok(!('wscore' in scan.usedImports), 'imports of a workspace member crate are local')
     assert.ok(!('std' in scan.usedImports))
     assert.ok(!('crate' in scan.usedImports))
+  })
+
+  test('reads optionalDependencies from package.json', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-optdeps-'))
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'optdeps-fixture',
+          dependencies: { zod: '^3.22.0' },
+          optionalDependencies: { sharp: '^0.33.0' },
+        }),
+      )
+      const scan = parseJson(['scan', dir, '--no-cache'])
+      assert.equal(scan.declaredDeps.zod, '^3.22.0')
+      assert.equal(scan.declaredDeps.sharp, '^0.33.0')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('resolves go.work use directives and local go.mod replace targets as local modules', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-gowork-'))
+    try {
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true })
+      fs.mkdirSync(path.join(dir, 'shared'), { recursive: true })
+      fs.writeFileSync(
+        path.join(dir, 'go.work'),
+        'go 1.22\nuse (\n\t./api\n\t./shared\n)\n',
+      )
+      fs.writeFileSync(
+        path.join(dir, 'shared/go.mod'),
+        'module example.com/shared\n\ngo 1.22\n',
+      )
+      fs.writeFileSync(
+        path.join(dir, 'api/go.mod'),
+        [
+          'module example.com/api',
+          'go 1.22',
+          'require (',
+          '\texample.com/shared v0.0.0',
+          '\tgithub.com/gin-gonic/gin v1.9.1',
+          ')',
+          'replace example.com/shared => ../shared',
+        ].join('\n'),
+      )
+      fs.writeFileSync(
+        path.join(dir, 'api/main.go'),
+        [
+          'package main',
+          'import (',
+          '\t"example.com/shared/auth"',
+          '\t"github.com/gin-gonic/gin"',
+          ')',
+          'func main() { _ = gin.Default(); _ = auth.Check }',
+        ].join('\n'),
+      )
+      const scan = parseJson(['scan', dir, '--no-cache'])
+      assert.deepEqual(scan.ecosystems, ['go'])
+      assert.equal(scan.declaredDeps['github.com/gin-gonic/gin'], 'v1.9.1')
+      assert.ok(!('example.com/shared' in scan.declaredDeps), 'locally replaced module is not an external dep')
+      assert.ok(!('example.com/shared' in scan.usedImports), 'imports of local go.work/replaced module are skipped')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

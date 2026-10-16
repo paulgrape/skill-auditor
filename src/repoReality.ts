@@ -9,14 +9,17 @@ import {
   writeCachedReality,
 } from './cache.js'
 import { ECOSYSTEMS, MANIFEST_GLOBS, SOURCE_GLOBS } from './ecosystems/globs.js'
-import { readGoMod, scanGoImports } from './ecosystems/go.js'
+import { readGoMod, readGoWork, scanGoImports } from './ecosystems/go.js'
 import { scanJavaScriptImports } from './ecosystems/javascript.js'
 import {
+  readPipfile,
   readPyproject,
   readRequirements,
+  readSetupCfg,
+  readSetupPy,
   scanPythonImports,
 } from './ecosystems/python.js'
-import { readCargoToml, scanRustImports } from './ecosystems/rust.js'
+import { readCargoManifest, scanRustImports } from './ecosystems/rust.js'
 import type { SourceImport } from './ecosystems/types.js'
 import { frontmatterList, parseSimpleYaml } from './frontmatter.js'
 import { DEFAULT_IGNORE } from './ignore.js'
@@ -65,6 +68,7 @@ interface PackageJson {
   dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
   peerDependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
   workspaces?: string[] | { packages?: string[] }
 }
 
@@ -81,6 +85,7 @@ function depsOf(pkg: PackageJson): Record<string, string> {
     ...(pkg.dependencies ?? {}),
     ...(pkg.devDependencies ?? {}),
     ...(pkg.peerDependencies ?? {}),
+    ...(pkg.optionalDependencies ?? {}),
   }
 }
 
@@ -136,13 +141,16 @@ function readText(file: string): string | null {
 /** Everything the manifests say, plus what the source scans need to know from them. */
 interface Declared {
   deps: Record<string, string>
+  indirectDeps: Record<string, string>
   ecosystems: Set<Ecosystem>
-  /** Every module path declared by a go.mod under the project: all of them are the project's own packages */
+  /** Every module path declared by a go.mod or replaced to a local path under the project */
   goModules: string[]
   /** Top-level Python modules that are part of the project, not dependencies */
   pythonLocalModules: Set<string>
-  /** Crate names declared in any Cargo.toml */
+  /** External crate names declared in any Cargo.toml */
   cargoCrates: Set<string>
+  /** Workspace member crates and local path dependencies in Cargo.toml */
+  cargoLocalCrates: Set<string>
 }
 
 /** Adds `source` entries to `target` without overriding earlier (more authoritative) ones. */
@@ -170,10 +178,12 @@ function mergeFirstWins(
 function readDeclared(projectRoot: string): Declared {
   const declared: Declared = {
     deps: {},
+    indirectDeps: {},
     ecosystems: new Set(),
     goModules: [],
     pythonLocalModules: new Set(),
     cargoCrates: new Set(),
+    cargoLocalCrates: new Set(),
   }
 
   // npm
@@ -199,9 +209,19 @@ function readDeclared(projectRoot: string): Declared {
     const text = readText(file)
     if (text === null) continue
     declared.ecosystems.add('python')
-    const deps = path.basename(file) === 'pyproject.toml'
-      ? readPyproject(text)
-      : readRequirements(text)
+    const base = path.basename(file)
+    let deps: Record<string, string>
+    if (base === 'pyproject.toml') {
+      deps = readPyproject(text)
+    } else if (base === 'Pipfile') {
+      deps = readPipfile(text)
+    } else if (base === 'setup.cfg') {
+      deps = readSetupCfg(text)
+    } else if (base === 'setup.py') {
+      deps = readSetupPy(text)
+    } else {
+      deps = readRequirements(text, { filePath: file })
+    }
     mergeFirstWins(declared.deps, deps)
     for (const module of localPythonModules(path.dirname(file))) {
       declared.pythonLocalModules.add(module)
@@ -212,23 +232,119 @@ function readDeclared(projectRoot: string): Declared {
   }
 
   // Go
+  const addLocalGoModule = (modPath: string) => {
+    if (modPath && !declared.goModules.includes(modPath)) {
+      declared.goModules.push(modPath)
+    }
+  }
+  const applyGoReplaces = (replaceMap: Record<string, string>, baseDir: string) => {
+    for (const [oldMod, target] of Object.entries(replaceMap)) {
+      if (
+        target.startsWith('./') ||
+        target.startsWith('../') ||
+        target.startsWith('/')
+      ) {
+        const targetDir = path.resolve(baseDir, target)
+        if (fs.existsSync(targetDir)) {
+          addLocalGoModule(oldMod)
+          const targetGoMod = path.join(targetDir, 'go.mod')
+          const targetText = readText(targetGoMod)
+          if (targetText !== null) {
+            const parsedTarget = readGoMod(targetText)
+            addLocalGoModule(parsedTarget.modulePath)
+            mergeFirstWins(declared.deps, parsedTarget.require)
+            mergeFirstWins(declared.indirectDeps, parsedTarget.indirect)
+          }
+        }
+      }
+    }
+  }
+
   for (const file of findFiles(projectRoot, MANIFEST_GLOBS.go)) {
     const text = readText(file)
     if (text === null) continue
     declared.ecosystems.add('go')
+    const base = path.basename(file)
+    const dir = path.dirname(file)
+    if (base === 'go.work') {
+      const work = readGoWork(text)
+      for (const useDir of work.use) {
+        const modFile = path.resolve(dir, useDir, 'go.mod')
+        const modText = readText(modFile)
+        if (modText === null) continue
+        const mod = readGoMod(modText)
+        addLocalGoModule(mod.modulePath)
+        mergeFirstWins(declared.deps, mod.require)
+        mergeFirstWins(declared.indirectDeps, mod.indirect)
+        applyGoReplaces(mod.replace, path.dirname(modFile))
+      }
+      applyGoReplaces(work.replace, dir)
+      continue
+    }
     const mod = readGoMod(text)
-    if (mod.modulePath) declared.goModules.push(mod.modulePath)
+    addLocalGoModule(mod.modulePath)
     mergeFirstWins(declared.deps, mod.require)
+    mergeFirstWins(declared.indirectDeps, mod.indirect)
+    applyGoReplaces(mod.replace, dir)
+  }
+  for (const localMod of declared.goModules) {
+    delete declared.deps[localMod]
+    delete declared.indirectDeps[localMod]
+  }
+  for (const directMod of Object.keys(declared.deps)) {
+    delete declared.indirectDeps[directMod]
   }
 
   // Cargo
-  for (const file of findFiles(projectRoot, MANIFEST_GLOBS.cargo)) {
+  const cargoFiles = findFiles(projectRoot, MANIFEST_GLOBS.cargo)
+  const seenCargoFiles = new Set<string>(cargoFiles.map(f => path.resolve(f)))
+  const pendingCargoDeps: Record<string, string>[] = []
+
+  const visitCargoFile = (file: string) => {
     const text = readText(file)
-    if (text === null) continue
+    if (text === null) return
     declared.ecosystems.add('cargo')
-    const crates = readCargoToml(text)
-    for (const name of Object.keys(crates)) declared.cargoCrates.add(name)
-    mergeFirstWins(declared.deps, crates)
+    const manifest = readCargoManifest(text)
+    if (manifest.packageName) {
+      declared.cargoLocalCrates.add(manifest.packageName)
+    }
+    for (const localDep of manifest.localPathDeps) {
+      declared.cargoLocalCrates.add(localDep)
+    }
+    pendingCargoDeps.push(manifest.dependencies)
+
+    if (manifest.workspaceMembers.length > 0) {
+      const memberManifests = fg.sync(
+        manifest.workspaceMembers.map(m => `${m.replace(/\/+$/, '')}/Cargo.toml`),
+        {
+          cwd: path.dirname(file),
+          ignore: DEFAULT_IGNORE,
+          absolute: true,
+          onlyFiles: true,
+        },
+      )
+      for (const memberFile of memberManifests) {
+        const resolved = path.resolve(memberFile)
+        if (!seenCargoFiles.has(resolved)) {
+          seenCargoFiles.add(resolved)
+          visitCargoFile(memberFile)
+        }
+      }
+    }
+  }
+
+  for (const file of cargoFiles) {
+    visitCargoFile(file)
+  }
+  for (const deps of pendingCargoDeps) {
+    for (const [name, version] of Object.entries(deps)) {
+      if (declared.cargoLocalCrates.has(name) || version.startsWith('path:')) {
+        declared.cargoLocalCrates.add(name)
+        continue
+      }
+      declared.cargoCrates.add(name)
+      if (!(name in declared.deps)) declared.deps[name] = version
+    }
   }
 
   return declared
@@ -438,16 +554,21 @@ function scanRepoReality(projectRoot: string, parser: Parser): RepoReality {
   if (goFiles > 0) present.add('go')
 
   const rsFiles = scanSources(projectRoot, 'cargo', collector, source =>
-    scanRustImports(source, { declaredCrates: declared.cargoCrates }),
+    scanRustImports(source, {
+      declaredCrates: declared.cargoCrates,
+      localCrates: declared.cargoLocalCrates,
+    }),
   )
   if (rsFiles > 0) present.add('cargo')
 
+  const hasIndirect = Object.keys(declared.indirectDeps).length > 0
   return {
     ecosystems: ECOSYSTEMS.filter(e => present.has(e)),
     declaredDeps: declared.deps,
     usedImports: collector.usedImports,
     usedIdentifiers: collector.usedIdentifiers,
     importEvidence: collector.importEvidence,
+    ...(hasIndirect ? { indirectDeps: declared.indirectDeps } : {}),
   }
 }
 
