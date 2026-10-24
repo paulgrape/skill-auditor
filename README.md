@@ -65,12 +65,6 @@ skill-auditor scan . --parser ts-morph        # or SKILL_AUDITOR_PARSER=ts-morph
 
 Both parsers produce the same ground truth on the test fixtures (see `test/lexer.test.mjs`), and `scan` reports the `parser` it used. The cache is keyed by parser too, so switching never serves stale results.
 
-### Planned
-
-- **Prose analysis & broken path detection** — verify project-relative file paths in `SKILL.md`, score natural-language structure, and detect cross-skill overlap
-- **CI & watch mode** — composite GitHub Action, incremental file-level cache, and `skill-auditor watch`
-- **Data science & DevOps** — `.ipynb` notebook scanning, ML/dataframe taxonomy, and infrastructure/observability categories
-
 The package taxonomy includes React/Next.js, Vue, Svelte, Astro, Remix, FastAPI, Django, Flask, Gin, Echo, Fiber, Chi, Axum, Actix, SQLAlchemy, GORM, SQLx, SeaORM, Diesel, Pydantic, Serde, Tokio, Celery, and more. A package can belong to several categories — `@reduxjs/toolkit` is both state and data-fetching — and taxonomy entries can optionally be prefixed with an ecosystem (`python:redis`, `npm:redis`) to disambiguate collisions.
 
 Contributions to the taxonomy ([`src/taxonomyData.ts`](src/taxonomyData.ts)) are welcome via PR.
@@ -199,7 +193,7 @@ skill-auditor scaffold routing --project . --out .cursor/skills
 skill-auditor scaffold routing --project . --dry-run --json
 ```
 
-Writes `.cursor/skills/routing/SKILL.md` using the project's real import specifiers and file paths, with code fences tagged for the ecosystem each example comes from. `--dry-run` prints the file without writing it. Prefer this over inventing a SKILL.md by hand.
+Writes `.cursor/skills/routing/SKILL.md` using the project's real import specifiers and file paths, with code fences tagged for the ecosystem each example comes from. `--dry-run` prints the file without writing it (in the CLI, `scaffold` writes by default unless `--dry-run` is passed; in the MCP `scaffold` tool, `dryRun` defaults to `true`). Prefer this over inventing a SKILL.md by hand.
 
 ### `compare` — score deltas between two audits
 
@@ -292,7 +286,7 @@ Fixes that only chase the number don't work: name-drops, unused imports, and dep
 }
 ```
 
-It exposes read-only tools — `audit`, `gaps`, `scan`, `validate`, `extract`, `spec-check`, `docs` — plus `scaffold` (writes a file unless `dryRun` is true, which is the default). Tool results are the same JSON payloads as the CLI, as both text and `structuredContent`. Templates and the bundled skill are MCP resources (`skill-auditor://templates/…`, `skill-auditor://bundled/skill-auditor`); the `audit-and-fix` prompt walks the improvement loop. Paths resolve relative to the directory the server was started in; `skill-auditor mcp --confine` rejects paths outside that directory. The server speaks the current stateless revision (`2026-07-28`) and the older `initialize` handshake.
+It exposes read-only tools — `audit`, `gaps`, `scan`, `validate`, `extract`, `spec-check`, `docs` — plus `scaffold` (writes a file unless `dryRun` is true, which is the default in MCP; the CLI writes by default unless `--dry-run` is passed). Repo-scanning tools (`audit`, `gaps`, `scan`, `scaffold`) also accept `parser` (`"lexer"` | `"ts-morph"`) and `noCache` (`boolean`), and emit `notifications/progress` during the scan when the request includes `_meta.progressToken`. Tool results are the same JSON payloads as the CLI, as both text and `structuredContent`. Templates and the bundled skill are MCP resources (`skill-auditor://templates/…`, `skill-auditor://bundled/skill-auditor`); the `audit-and-fix` prompt walks the improvement loop. Paths resolve relative to the directory the server was started in; `skill-auditor mcp --confine` rejects paths outside that directory. The server speaks the current stateless revision (`2026-07-28`) and the older `initialize` handshake.
 
 ## Use as a library
 
@@ -301,12 +295,12 @@ The analysis is also importable, for building your own gate or report:
 ```ts
 import {
   auditSkills,
-  buildRepoReality,
+  buildRepoRealityAsync,
   detectGaps,
   findSkillDirs,
 } from 'skill-auditor'
 
-const repo = buildRepoReality('.')
+const repo = await buildRepoRealityAsync('.')
 const results = auditSkills(repo, findSkillDirs(['.cursor/skills']))
 
 for (const { report, score } of results) {
@@ -314,7 +308,7 @@ for (const { report, score } of results) {
 }
 ```
 
-`buildRepoReality(root, { cache?, parser? })`, `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps`, `runSpecCompliance`, `validateSkill` and `scaffoldSkill` are exported individually when you want a single stage, along with the TypeScript types for every result. The per-language import scanners (`scanJavaScriptImports`, `scanPythonImports`, `scanGoImports`, `scanRustImports`) and manifest readers (`readPyproject`, `readRequirements`, `readGoMod`, `readCargoToml`) are exported too. `auditSkills` throws on the first unreadable skill; `auditSkillsSafely` returns `{ results, errors }` instead, which is what the CLI and MCP server use.
+`buildRepoRealityAsync(root, { cache?, parser?, concurrency?, onProgress? })` (and the synchronous `buildRepoReality`, deprecated for removal in 3.0), `extractSkillIdentifiers`, `buildAlignmentReport`, `scoreSkill`, `buildSuggestions`, `detectGaps`, `runSpecCompliance`, `validateSkill` and `scaffoldSkill` are exported individually when you want a single stage, along with the TypeScript types for every result. The per-language import scanners (`scanJavaScriptImports`, `scanPythonImports`, `scanGoImports`, `scanRustImports`) and manifest readers (`readPyproject`, `readRequirements`, `readGoMod`, `readCargoToml`) are exported too. `auditSkills` throws on the first unreadable skill; `auditSkillsSafely` returns `{ results, errors }` instead, which is what the CLI and MCP server use.
 
 ## Starter templates
 

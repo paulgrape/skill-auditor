@@ -154,6 +154,25 @@ describe('mcp server', () => {
           arguments: { path: './fixtures/does-not-exist' },
         }),
         request(5, 'tools/call', { name: 'no-such-tool', arguments: {} }),
+        request(6, 'tools/call', {
+          name: 'scan',
+          arguments: {
+            project: FAKE_PROJECT,
+            parser: 'ts-morph',
+            noCache: true,
+          },
+          _meta: {
+            ...modernMeta()._meta,
+            progressToken: 'scan-progress-1',
+          },
+        }),
+        request(7, 'tools/call', {
+          name: 'scan',
+          arguments: {
+            project: FAKE_PROJECT,
+            parser: 'not-a-parser',
+          },
+        }),
       ]))
     })
 
@@ -187,6 +206,35 @@ describe('mcp server', () => {
 
     test('rejects an unknown tool as invalid params', () => {
       assert.equal(byId(responses, 5).error.code, -32602)
+    })
+
+    test('accepts parser and noCache tool parameters and emits notifications/progress when progressToken is set', () => {
+      const { structuredContent, isError } = byId(responses, 6).result
+      assert.equal(isError, false)
+      assert.equal(structuredContent.parser, 'ts-morph')
+
+      const progressNotes = responses.filter(
+        r =>
+          r.method === 'notifications/progress' &&
+          r.params?.progressToken === 'scan-progress-1',
+      )
+      assert.ok(
+        progressNotes.length >= 2,
+        `expected at least 2 progress notifications, got ${progressNotes.length}`,
+      )
+      for (const note of progressNotes) {
+        assert.equal(typeof note.params.progress, 'number')
+        assert.equal(typeof note.params.total, 'number')
+        assert.equal(typeof note.params.message, 'string')
+      }
+      const last = progressNotes.at(-1)
+      assert.equal(last.params.progress, last.params.total)
+    })
+
+    test('reports an invalid parser parameter as a tool error', () => {
+      const { isError, content } = byId(responses, 7).result
+      assert.equal(isError, true)
+      assert.match(content[0].text, /Unknown parser "not-a-parser"/)
     })
   })
 

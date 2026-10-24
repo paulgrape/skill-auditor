@@ -1,6 +1,12 @@
-import fg from 'fast-glob'
 import * as fs from 'fs'
 import * as path from 'path'
+import {
+  cacheDisabledByEnv,
+  fingerprintSkill,
+  readCachedSkill,
+  walkSkill,
+  writeCachedSkill,
+} from './cache.js'
 import { scanGoImports, stripGoComments } from './ecosystems/go.js'
 import { maskJavaScript, scanJavaScriptImports } from './ecosystems/javascript.js'
 import {
@@ -502,19 +508,45 @@ function locator(file: string, baseLine: number, heading?: string): Locator {
       : { file, line: baseLine + lineOffset }
 }
 
+export interface ExtractSkillOptions {
+  /** Use the fingerprinted per-skill cache (default true; SKILL_AUDITOR_NO_CACHE=1 also disables it) */
+  cache?: boolean
+}
+
 /**
  * Extracts identifiers from a skill directory: the SKILL.md body's code-shaped
  * text (section-aware, with substantiation tracking), plus any bundled
  * scripts/references verbatim (those are already code, no markdown stripping
  * needed). Every reference carries the file and line it was first seen at.
+ *
+ * Served from the per-skill cache when nothing in the skill directory or active
+ * taxonomy has changed since the last extraction, so `audit-all` followed by
+ * `gaps` does not re-parse every SKILL.md.
  */
-export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
+export function extractSkillIdentifiers(
+  skillDir: string,
+  options: ExtractSkillOptions = {},
+): SkillIdentifiers {
   const skillMdPath = path.join(skillDir, 'SKILL.md')
   if (!fs.existsSync(skillMdPath)) {
     throw new Error(`No SKILL.md found at ${skillMdPath}`)
   }
+
+  const walked = walkSkill(skillDir)
+  const useCache = options.cache !== false && !cacheDisabledByEnv()
+  let fingerprint: string | undefined
+  if (useCache) {
+    fingerprint = fingerprintSkill(skillDir, walked)
+    const cached = readCachedSkill(skillDir, fingerprint)
+    if (cached) return cached
+  }
+
   // Normalize CRLF so fence/line-anchored regexes behave the same on Windows.
-  const raw = fs.readFileSync(skillMdPath, 'utf-8').replace(/\r\n/g, '\n')
+  const resolvedSkillMd = path.resolve(skillMdPath)
+  const raw = (
+    walked.contentsByPath.get(resolvedSkillMd) ??
+    fs.readFileSync(resolvedSkillMd, 'utf-8')
+  ).replace(/\r\n/g, '\n')
   const { data: frontmatter, body, bodyStartLine } = parseFrontmatter(raw)
 
   const result: SkillIdentifiers = {
@@ -646,18 +678,20 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
   // fence tag. Markdown references go through the same section-aware pass as
   // SKILL.md; code files are parsed directly and, being real files, do not
   // need surrounding prose to count.
-  const bundledFiles = fg.sync(['scripts/**/*.*', 'references/**/*.*'], {
-    cwd: skillDir,
-    absolute: true,
-  })
-  for (const file of bundledFiles) {
+  const bundledFiles = walked.files
+    .filter(f => f.relativePath !== 'SKILL.md')
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+  for (const entry of bundledFiles) {
+    const file = entry.absolutePath
     const extension = path.extname(file).slice(1).toLowerCase()
     const language = classifyFence(extension)
     const isMarkdown = extension === 'md' || extension === 'mdx'
     if (language === 'other' && !isMarkdown) continue
-    const relative = path.relative(skillDir, file).replace(/\\/g, '/')
+    const relative = entry.relativePath
     try {
-      const text = fs.readFileSync(file, 'utf-8').replace(/\r\n/g, '\n')
+      const text = (
+        walked.contentsByPath.get(file) ?? fs.readFileSync(file, 'utf-8')
+      ).replace(/\r\n/g, '\n')
       if (isMarkdown) {
         const parsed = parseFrontmatter(text)
         mergeMarkdown(parsed.body, parsed.bodyStartLine, relative)
@@ -667,6 +701,10 @@ export function extractSkillIdentifiers(skillDir: string): SkillIdentifiers {
     } catch {
       // binary/unreadable asset, skip
     }
+  }
+
+  if (useCache && fingerprint) {
+    writeCachedSkill(skillDir, fingerprint, result)
   }
 
   return result

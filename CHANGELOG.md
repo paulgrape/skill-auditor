@@ -3,6 +3,55 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 2.2.0
+
+Scale and throughput release: single tree walk shared between fingerprinting and
+scanning, bounded-concurrency `buildRepoRealityAsync`, hybrid content-hash +
+`mtime+size` caching, per-skill extraction cache, MCP `notifications/progress`
+and `parser`/`noCache` tool arguments, and a 10k-file synthetic benchmark in CI.
+`schemaVersion` stays **2**.
+
+### Added
+
+- **`buildRepoRealityAsync` & bounded-concurrency scanning.** Added
+  `buildRepoRealityAsync(projectRoot, options)` (plus `scanReportAsync`,
+  `gapsReportAsync`, `walkProjectAsync`, `fingerprintProjectAsync`, and
+  `mapConcurrent`) to scan repositories asynchronously with bounded file-read
+  concurrency (`DEFAULT_CONCURRENCY = 32`, configurable via
+  `options.concurrency`). The CLI (`scan`, `audit`, `audit-all`, `gaps`,
+  `scaffold`) and MCP `tools/call` handlers now run on the async path.
+  `buildRepoReality` remains exported for backwards compatibility and is marked
+  `@deprecated` (scheduled for removal in `3.0`).
+- **Single tree walk shared by fingerprint and scan.** `walkProject` /
+  `walkProjectAsync` walk the project once per run and partition manifests and
+  source files across ecosystems (`npm`, `python`, `go`, `cargo`), eliminating
+  duplicate `fast-glob` passes on cache misses.
+- **Hybrid content-hash & `mtime+size` fingerprinting.** Files up to
+  `CONTENT_HASH_MAX_BYTES` (64 KiB) are fingerprinted by SHA-1 content digest
+  (and their text is retained in memory so a cache miss never reads them a
+  second time), preventing stale cache hits from same-size edits or coarse
+  filesystem `mtime` granularity. Larger files continue using `mtimeMs|size`.
+- **Per-skill extraction cache.** `extractSkillIdentifiers` now caches extracted
+  `SkillIdentifiers` in memory and on disk keyed by the skill directory's
+  content fingerprint (`SKILL.md`, `scripts/`, `references/`) and active
+  taxonomy signature, so running `audit` / `audit-all` followed by `gaps` does
+  not re-parse unchanged skills.
+- **MCP `progressToken`, `parser`, and `noCache` support.**
+  - When a `tools/call` request includes `_meta.progressToken`, the MCP server
+    emits `notifications/progress` messages (`progress`, `total`, `message`) as
+    the project tree is walked and scanned.
+  - Exposed `parser` (`"lexer"` | `"ts-morph"`) and `noCache` (`boolean`)
+    arguments on the MCP `audit`, `gaps`, `scan`, and `scaffold` tools (and
+    `noCache` on `extract`).
+  - Clarified the `scaffold` dry-run default across `docs`, `README.md`, and
+    MCP tool descriptions (`dryRun` defaults to `false` in the CLI unless
+    `--dry-run` is passed, and `true` in the MCP `scaffold` tool).
+- **Synthetic 10k-file benchmark (`bench/run.mjs`).** Added `npm run bench`
+  (`bench/run.mjs`) to benchmark tree walking, cold/warm async scans, sync
+  scans, and cached skill extraction/gap detection on a synthetic 10,000-file
+  polyglot repository, wired into `.github/workflows/ci.yml` as a non-gating
+  job that publishes timing tables to `$GITHUB_STEP_SUMMARY`.
+
 ## 2.1.0
 
 Backend taxonomy and `--checklist backend`, multi-language deprecation rules

@@ -6,7 +6,10 @@ import {
   packageInCategory,
 } from './taxonomy.js'
 import { findSkillDirs } from './discoverSkills.js'
-import { extractSkillIdentifiers } from './skillIdentifiers.js'
+import {
+  extractSkillIdentifiers,
+  type ExtractSkillOptions,
+} from './skillIdentifiers.js'
 import type { GapFinding, GapReport, ImportEvidence, RepoReality } from './types.js'
 
 /** Max evidence entries attached to a single gap finding. */
@@ -85,11 +88,12 @@ function buildRecommendation(
 function categoriesFromSkillDirs(
   skillDirs: string[],
   repo: RepoReality,
+  options?: ExtractSkillOptions,
 ): Set<string> {
   const cats = new Set<string>()
   for (const dir of skillDirs) {
     try {
-      const skill = extractSkillIdentifiers(dir)
+      const skill = extractSkillIdentifiers(dir, options)
       for (const pkg of skill.packages) {
         const ecos = ecosystemsForSkillPackage(pkg, skill, repo)
         for (const cat of categoriesForPackage(pkg, ecos)) cats.add(cat)
@@ -129,11 +133,12 @@ export function detectGaps(
   repo: RepoReality,
   skillRoots: string[],
   checklistKey?: string,
+  options?: ExtractSkillOptions,
 ): GapReport {
   const installedSkillDirs = findSkillDirs(skillRoots)
   const projectCategories = repoCategories(repo)
   const coveredCategories = [
-    ...categoriesFromSkillDirs(installedSkillDirs, repo),
+    ...categoriesFromSkillDirs(installedSkillDirs, repo, options),
   ].sort()
   const covered = new Set(coveredCategories)
   const gaps: GapFinding[] = []

@@ -4,12 +4,21 @@ import * as path from 'path'
 import { prepareProject } from './config.js'
 import { defaultSkillRoots, resolveSkillPath } from './discoverSkills.js'
 import { envelope, toPlainJson } from './envelope.js'
-import { buildRepoReality } from './repoReality.js'
+import {
+  buildRepoReality,
+  buildRepoRealityAsync,
+  PARSERS,
+  resolveParser,
+  type BuildRepoRealityOptions,
+  type ScanProgress,
+} from './repoReality.js'
 import {
   auditReport,
   auditSkillsSafely,
   gapsReport,
+  gapsReportAsync,
   scanReport,
+  scanReportAsync,
   validateReport,
 } from './reports.js'
 import { scaffoldSkill } from './scaffold.js'
@@ -76,11 +85,21 @@ function resolveUserPath(input: string): string {
   return resolved
 }
 
-interface JsonRpcResponse {
+export interface JsonRpcResponse {
   jsonrpc: '2.0'
   id?: string | number | null
   result?: Record<string, unknown>
   error?: { code: number; message: string; data?: unknown }
+}
+
+export interface JsonRpcNotification {
+  jsonrpc: '2.0'
+  method: string
+  params: Record<string, unknown>
+}
+
+export interface ToolContext {
+  onProgress?: (progress: ScanProgress) => void
 }
 
 interface McpTool {
@@ -90,7 +109,11 @@ interface McpTool {
   inputSchema: Record<string, unknown>
   outputSchema: Record<string, unknown>
   readOnly?: boolean
-  run(args: Record<string, unknown>): unknown
+  run(args: Record<string, unknown>, context?: ToolContext): unknown
+  runAsync?(
+    args: Record<string, unknown>,
+    context?: ToolContext,
+  ): Promise<unknown>
 }
 
 function requireString(args: Record<string, unknown>, key: string): string {
@@ -133,11 +156,40 @@ function optionalBoolean(
   return value
 }
 
+function realityOptionsFromArgs(
+  args: Record<string, unknown>,
+  context?: ToolContext,
+): BuildRepoRealityOptions {
+  const parser = optionalString(args, 'parser')
+  if (parser !== undefined) resolveParser(parser)
+  const noCache = optionalBoolean(args, 'noCache')
+  return {
+    ...(noCache ? { cache: false } : {}),
+    ...(parser ? { parser } : {}),
+    ...(context?.onProgress ? { onProgress: context.onProgress } : {}),
+  }
+}
+
 const PROJECT_PROPERTY = {
   type: 'string',
   description:
     'Project root to analyze. Defaults to the working directory the server runs in.',
   default: '.',
+}
+
+const PARSER_PROPERTY = {
+  type: 'string',
+  enum: [...PARSERS],
+  description:
+    'JS/TS parser to use: "lexer" (built-in default) or "ts-morph" (optional peer dependency).',
+  default: 'lexer',
+}
+
+const NO_CACHE_PROPERTY = {
+  type: 'boolean',
+  description:
+    'Rebuild RepoReality and skill extractions even when the cached fingerprint matches.',
+  default: false,
 }
 
 const SCHEMA_VERSION_PROPERTY = {
@@ -160,6 +212,8 @@ export const MCP_TOOLS: McpTool[] = [
             'Skill directory containing SKILL.md, or a skills root to scan recursively.',
         },
         project: PROJECT_PROPERTY,
+        parser: PARSER_PROPERTY,
+        noCache: NO_CACHE_PROPERTY,
       },
       required: ['path'],
       additionalProperties: false,
@@ -185,14 +239,30 @@ export const MCP_TOOLS: McpTool[] = [
       },
       required: ['schemaVersion', 'count', 'results', 'errors'],
     },
-    run(args) {
+    run(args, context) {
       const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
       prepareProject(project)
-      const repo = buildRepoReality(project)
+      const repo = buildRepoReality(project, options)
       const skillDirs = resolveSkillPath(
         resolveUserPath(requireString(args, 'path')),
       )
-      const { results, errors } = auditSkillsSafely(repo, skillDirs)
+      const { results, errors } = auditSkillsSafely(repo, skillDirs, {
+        cache: options.cache,
+      })
+      return auditReport(results, errors)
+    },
+    async runAsync(args, context) {
+      const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
+      prepareProject(project)
+      const repo = await buildRepoRealityAsync(project, options)
+      const skillDirs = resolveSkillPath(
+        resolveUserPath(requireString(args, 'path')),
+      )
+      const { results, errors } = auditSkillsSafely(repo, skillDirs, {
+        cache: options.cache,
+      })
       return auditReport(results, errors)
     },
   },
@@ -221,6 +291,8 @@ export const MCP_TOOLS: McpTool[] = [
           description:
             'Also scan the well-known project-local skill roots alongside the roots given.',
         },
+        parser: PARSER_PROPERTY,
+        noCache: NO_CACHE_PROPERTY,
       },
       additionalProperties: false,
     },
@@ -241,8 +313,9 @@ export const MCP_TOOLS: McpTool[] = [
         'gaps',
       ],
     },
-    run(args) {
+    run(args, context) {
       const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
       prepareProject(project)
       const roots = (optionalStringArray(args, 'roots') ?? []).map(resolveUserPath)
       const withDefaults =
@@ -254,6 +327,24 @@ export const MCP_TOOLS: McpTool[] = [
         resolvedRoots,
         project,
         optionalString(args, 'checklist'),
+        options,
+      )
+    },
+    async runAsync(args, context) {
+      const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
+      prepareProject(project)
+      const roots = (optionalStringArray(args, 'roots') ?? []).map(resolveUserPath)
+      const withDefaults =
+        optionalBoolean(args, 'defaults') ?? roots.length === 0
+      const resolvedRoots = withDefaults
+        ? [...roots, ...defaultSkillRoots(project)]
+        : roots
+      return gapsReportAsync(
+        resolvedRoots,
+        project,
+        optionalString(args, 'checklist'),
+        options,
       )
     },
   },
@@ -264,7 +355,11 @@ export const MCP_TOOLS: McpTool[] = [
       "Report what the project really uses: the ecosystems present (npm, python, go, cargo), declared dependencies from every manifest, the import specifiers and identifiers its source imports, and file-level evidence per package. This is the ground truth every skill is scored against — read it before writing or fixing a skill.",
     inputSchema: {
       type: 'object',
-      properties: { project: PROJECT_PROPERTY },
+      properties: {
+        project: PROJECT_PROPERTY,
+        parser: PARSER_PROPERTY,
+        noCache: NO_CACHE_PROPERTY,
+      },
       additionalProperties: false,
     },
     outputSchema: {
@@ -293,9 +388,15 @@ export const MCP_TOOLS: McpTool[] = [
         'config',
       ],
     },
-    run(args) {
+    run(args, context) {
       const project = resolveUserPath(optionalString(args, 'project') ?? '.')
-      return scanReport(project)
+      const options = realityOptionsFromArgs(args, context)
+      return scanReport(project, options)
+    },
+    async runAsync(args, context) {
+      const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
+      return scanReportAsync(project, options)
     },
   },
   {
@@ -344,14 +445,18 @@ export const MCP_TOOLS: McpTool[] = [
           type: 'string',
           description: 'Skill directory containing SKILL.md.',
         },
+        noCache: NO_CACHE_PROPERTY,
       },
       required: ['path'],
       additionalProperties: false,
     },
     outputSchema: { type: 'object' },
     run(args) {
+      const noCache = optionalBoolean(args, 'noCache')
       return envelope(
-        extractSkillIdentifiers(resolveUserPath(requireString(args, 'path'))),
+        extractSkillIdentifiers(resolveUserPath(requireString(args, 'path')), {
+          ...(noCache ? { cache: false } : {}),
+        }),
       )
     },
   },
@@ -413,7 +518,7 @@ export const MCP_TOOLS: McpTool[] = [
     name: 'scaffold',
     title: 'Generate a skill from repo evidence',
     description:
-      "Write a SKILL.md for one taxonomy category using the project's real import evidence. Defaults to dryRun so you can inspect the contents before writing.",
+      "Write a SKILL.md for one taxonomy category using the project's real import evidence. Defaults to dryRun (true in MCP; false in the CLI) so you can inspect the contents before writing.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -438,19 +543,39 @@ export const MCP_TOOLS: McpTool[] = [
         dryRun: {
           type: 'boolean',
           description:
-            'Return the generated contents without writing. Defaults to true.',
+            'Return the generated contents without writing. Defaults to true in MCP (the CLI writes by default unless --dry-run is passed).',
           default: true,
         },
+        parser: PARSER_PROPERTY,
+        noCache: NO_CACHE_PROPERTY,
       },
       required: ['category'],
       additionalProperties: false,
     },
     outputSchema: { type: 'object' },
     readOnly: false,
-    run(args) {
+    run(args, context) {
       const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
       prepareProject(project)
-      const repo = buildRepoReality(project)
+      const repo = buildRepoReality(project, options)
+      const dryRun = optionalBoolean(args, 'dryRun') ?? true
+      return envelope(
+        scaffoldSkill({
+          category: requireString(args, 'category'),
+          repo,
+          outDir: resolveUserPath(optionalString(args, 'out') ?? '.'),
+          name: optionalString(args, 'name'),
+          force: optionalBoolean(args, 'force'),
+          dryRun,
+        }),
+      )
+    },
+    async runAsync(args, context) {
+      const project = resolveUserPath(optionalString(args, 'project') ?? '.')
+      const options = realityOptionsFromArgs(args, context)
+      prepareProject(project)
+      const repo = await buildRepoRealityAsync(project, options)
       const dryRun = optionalBoolean(args, 'dryRun') ?? true
       return envelope(
         scaffoldSkill({
@@ -653,9 +778,63 @@ function negotiateLegacyVersion(params: Record<string, unknown>): string {
     : LEGACY_PROTOCOL_VERSIONS[0]
 }
 
+function progressContext(
+  params: Record<string, unknown>,
+  notify?: (notification: JsonRpcNotification) => void,
+): ToolContext {
+  const meta = asRecord(params._meta)
+  const rawToken = meta.progressToken
+  const progressToken =
+    typeof rawToken === 'string' || typeof rawToken === 'number'
+      ? rawToken
+      : undefined
+  if (progressToken === undefined || !notify) return {}
+  return {
+    onProgress: (p: ScanProgress) => {
+      notify({
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: {
+          progressToken,
+          progress: p.progress,
+          total: p.total,
+          message: p.message,
+        },
+      })
+    },
+  }
+}
+
+function formatToolSuccess(
+  id: string | number,
+  rawPayload: unknown,
+): JsonRpcResponse {
+  const payload = toPlainJson(rawPayload)
+  return result(id, {
+    content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+    structuredContent: payload,
+    isError: false,
+  })
+}
+
+function formatToolError(
+  id: string | number,
+  toolName: string,
+  err: unknown,
+): JsonRpcResponse {
+  // A failed audit is a tool-execution error, not a protocol error: report it
+  // in-band so the model can correct the arguments and retry.
+  const message = err instanceof Error ? err.message : String(err)
+  return result(id, {
+    content: [{ type: 'text', text: `${toolName} failed: ${message}` }],
+    isError: true,
+  })
+}
+
 function callTool(
   id: string | number,
   params: Record<string, unknown>,
+  notify?: (notification: JsonRpcNotification) => void,
 ): JsonRpcResponse {
   const name = params.name
   const tool = MCP_TOOLS.find(candidate => candidate.name === name)
@@ -664,44 +843,41 @@ function callTool(
   }
 
   try {
-    const payload = toPlainJson(tool.run(asRecord(params.arguments)))
-    return result(id, {
-      content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
-      structuredContent: payload,
-      isError: false,
-    })
+    const context = progressContext(params, notify)
+    return formatToolSuccess(id, tool.run(asRecord(params.arguments), context))
   } catch (err) {
-    // A failed audit is a tool-execution error, not a protocol error: report it
-    // in-band so the model can correct the arguments and retry.
-    const message = err instanceof Error ? err.message : String(err)
-    return result(id, {
-      content: [{ type: 'text', text: `${tool.name} failed: ${message}` }],
-      isError: true,
-    })
+    return formatToolError(id, tool.name, err)
   }
 }
 
-/**
- * Handles one decoded JSON-RPC message. Returns the response to write back, or
- * null for notifications, which take no reply.
- */
-export function handleMessage(message: unknown): JsonRpcResponse | null {
-  const request = asRecord(message)
-  if (request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
-    return failure(undefined, INVALID_REQUEST, 'Invalid JSON-RPC request')
+async function callToolAsync(
+  id: string | number,
+  params: Record<string, unknown>,
+  notify?: (notification: JsonRpcNotification) => void,
+): Promise<JsonRpcResponse> {
+  const name = params.name
+  const tool = MCP_TOOLS.find(candidate => candidate.name === name)
+  if (!tool) {
+    return failure(id, INVALID_PARAMS, `Unknown tool: ${String(name)}`)
   }
 
-  const id = request.id
-  const method = request.method
-  const params = asRecord(request.params)
-
-  if (typeof id !== 'string' && typeof id !== 'number') {
-    return null // notification: nothing to reply to, and none require action
+  try {
+    const context = progressContext(params, notify)
+    const args = asRecord(params.arguments)
+    const rawPayload = tool.runAsync
+      ? await tool.runAsync(args, context)
+      : tool.run(args, context)
+    return formatToolSuccess(id, rawPayload)
+  } catch (err) {
+    return formatToolError(id, tool.name, err)
   }
+}
 
-  const violation = protocolViolation(id, params)
-  if (violation) return violation
-
+function dispatchNonToolMethod(
+  id: string | number,
+  method: string,
+  params: Record<string, unknown>,
+): JsonRpcResponse {
   switch (method) {
     case 'server/discover':
       return result(id, {
@@ -721,9 +897,6 @@ export function handleMessage(message: unknown): JsonRpcResponse | null {
 
     case 'tools/list':
       return result(id, { ttlMs: 0, tools: MCP_TOOLS.map(toolDescriptor) })
-
-    case 'tools/call':
-      return callTool(id, params)
 
     case 'resources/list':
       return result(id, { resources: listResources() })
@@ -755,6 +928,69 @@ export function handleMessage(message: unknown): JsonRpcResponse | null {
   }
 }
 
+/**
+ * Handles one decoded JSON-RPC message synchronously. Returns the response to
+ * write back, or null for notifications, which take no reply.
+ */
+export function handleMessage(
+  message: unknown,
+  notify?: (notification: JsonRpcNotification) => void,
+): JsonRpcResponse | null {
+  const request = asRecord(message)
+  if (request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
+    return failure(undefined, INVALID_REQUEST, 'Invalid JSON-RPC request')
+  }
+
+  const id = request.id
+  const method = request.method
+  const params = asRecord(request.params)
+
+  if (typeof id !== 'string' && typeof id !== 'number') {
+    return null // notification: nothing to reply to, and none require action
+  }
+
+  const violation = protocolViolation(id, params)
+  if (violation) return violation
+
+  if (method === 'tools/call') {
+    return callTool(id, params, notify)
+  }
+
+  return dispatchNonToolMethod(id, method, params)
+}
+
+/**
+ * Async counterpart to {@link handleMessage}. Runs `tools/call` via
+ * `buildRepoRealityAsync` without blocking the event loop and streams
+ * `notifications/progress` when `_meta.progressToken` is provided.
+ */
+export async function handleMessageAsync(
+  message: unknown,
+  notify?: (notification: JsonRpcNotification) => void,
+): Promise<JsonRpcResponse | null> {
+  const request = asRecord(message)
+  if (request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
+    return failure(undefined, INVALID_REQUEST, 'Invalid JSON-RPC request')
+  }
+
+  const id = request.id
+  const method = request.method
+  const params = asRecord(request.params)
+
+  if (typeof id !== 'string' && typeof id !== 'number') {
+    return null
+  }
+
+  const violation = protocolViolation(id, params)
+  if (violation) return violation
+
+  if (method === 'tools/call') {
+    return callToolAsync(id, params, notify)
+  }
+
+  return dispatchNonToolMethod(id, method, params)
+}
+
 function toolDescriptor(tool: McpTool) {
   return {
     name: tool.name,
@@ -778,11 +1014,13 @@ function toolDescriptor(tool: McpTool) {
  */
 export function runMcpServer(options: { confine?: boolean } = {}): void {
   confineToCwd = Boolean(options.confine)
-  const send = (response: JsonRpcResponse) => {
-    process.stdout.write(JSON.stringify(response) + '\n')
+  const send = (payload: JsonRpcResponse | JsonRpcNotification) => {
+    process.stdout.write(JSON.stringify(payload) + '\n')
   }
 
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
+  let pending = Promise.resolve()
+  let stdinClosed = false
 
   lines.on('line', line => {
     const trimmed = line.trim()
@@ -794,18 +1032,25 @@ export function runMcpServer(options: { confine?: boolean } = {}): void {
     } catch {
       // No id can be recovered from an unparseable line, and the current schema
       // allows omitting it.
-      send(failure(undefined, PARSE_ERROR, 'Parse error'))
+      pending = pending.then(() => {
+        send(failure(undefined, PARSE_ERROR, 'Parse error'))
+      })
       return
     }
 
-    const response = handleMessage(message)
-    if (response) send(response)
+    pending = pending.then(async () => {
+      const response = await handleMessageAsync(message, send)
+      if (response) send(response)
+    })
   })
 
   // Closed stdin is the portable shutdown signal for a stdio server. Ending
-  // here means the process exits once the event loop drains, rather than
-  // process.exit() dropping stdout writes still queued on the pipe.
+  // here means the process exits once queued async tool calls drain, rather
+  // than process.exit() dropping stdout writes still queued on the pipe.
   lines.on('close', () => {
-    process.exitCode = 0
+    stdinClosed = true
+    void pending.then(() => {
+      if (stdinClosed) process.exitCode = 0
+    })
   })
 }

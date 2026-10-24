@@ -4,11 +4,17 @@ import { createRequire } from 'module'
 import * as path from 'path'
 import {
   cacheDisabledByEnv,
+  DEFAULT_CONCURRENCY,
   fingerprintProject,
+  fingerprintProjectAsync,
+  mapConcurrent,
   readCachedReality,
+  walkProject,
+  walkProjectAsync,
   writeCachedReality,
+  type WalkedProject,
 } from './cache.js'
-import { ECOSYSTEMS, MANIFEST_GLOBS, SOURCE_GLOBS } from './ecosystems/globs.js'
+import { ECOSYSTEMS } from './ecosystems/globs.js'
 import { readGoMod, readGoWork, scanGoImports } from './ecosystems/go.js'
 import { scanJavaScriptImports } from './ecosystems/javascript.js'
 import {
@@ -64,6 +70,102 @@ const MAX_EVIDENCE_PER_PACKAGE = 5
 /** Max length for example snippets. */
 const MAX_EXAMPLE_LENGTH = 200
 
+const JS_SOURCE_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/
+const PY_REQUIREMENTS_RE = /^requirements.*\.txt$/
+
+interface PartitionedTree {
+  sources: Record<Ecosystem, string[]>
+  manifests: Record<Ecosystem, string[]>
+}
+
+function sortByDepth(projectRoot: string, files: string[]): string[] {
+  const depth = (file: string) =>
+    path.relative(projectRoot, file).split(/[\\/]/).length
+  return [...new Set(files)].sort(
+    (a, b) => depth(a) - depth(b) || a.localeCompare(b),
+  )
+}
+
+/**
+ * Splits a single project tree walk into per-ecosystem source and manifest
+ * lists sorted root-first, avoiding repeated `fast-glob` passes.
+ */
+function partitionTree(
+  projectRoot: string,
+  tree: WalkedProject,
+): PartitionedTree {
+  const sources: Record<Ecosystem, string[]> = {
+    npm: [],
+    python: [],
+    go: [],
+    cargo: [],
+  }
+  const manifests: Record<Ecosystem, string[]> = {
+    npm: [],
+    python: [],
+    go: [],
+    cargo: [],
+  }
+
+  for (const file of tree.files) {
+    const base = path.posix.basename(file.relativePath)
+    const abs = file.absolutePath
+
+    if (JS_SOURCE_RE.test(base)) sources.npm.push(abs)
+    else if (base.endsWith('.py')) sources.python.push(abs)
+    else if (base.endsWith('.go')) sources.go.push(abs)
+    else if (base.endsWith('.rs')) sources.cargo.push(abs)
+
+    if (base === 'package.json' || file.relativePath === 'pnpm-workspace.yaml') {
+      manifests.npm.push(abs)
+    } else if (
+      base === 'pyproject.toml' ||
+      PY_REQUIREMENTS_RE.test(base) ||
+      base === 'Pipfile' ||
+      base === 'setup.cfg' ||
+      base === 'setup.py'
+    ) {
+      manifests.python.push(abs)
+    } else if (base === 'go.mod' || base === 'go.work') {
+      manifests.go.push(abs)
+    } else if (base === 'Cargo.toml') {
+      manifests.cargo.push(abs)
+    }
+  }
+
+  for (const eco of ECOSYSTEMS) {
+    sources[eco] = sortByDepth(projectRoot, sources[eco])
+    manifests[eco] = sortByDepth(projectRoot, manifests[eco])
+  }
+
+  return { sources, manifests }
+}
+
+function readText(file: string, tree?: WalkedProject): string | null {
+  const resolved = path.resolve(file)
+  const cached = tree?.contentsByPath.get(resolved)
+  if (cached !== undefined) return cached
+  try {
+    return fs.readFileSync(resolved, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+async function readTextAsync(
+  file: string,
+  tree?: WalkedProject,
+): Promise<string | null> {
+  const resolved = path.resolve(file)
+  const cached = tree?.contentsByPath.get(resolved)
+  if (cached !== undefined) return cached
+  try {
+    return await fs.promises.readFile(resolved, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
 interface PackageJson {
   dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
@@ -72,9 +174,10 @@ interface PackageJson {
   workspaces?: string[] | { packages?: string[] }
 }
 
-function readPackageJson(pkgPath: string): PackageJson | null {
+function parsePackageJson(raw: string | null): PackageJson | null {
+  if (raw === null) return null
   try {
-    return JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+    return JSON.parse(raw)
   } catch {
     return null // missing or malformed — treat as no declared deps
   }
@@ -96,15 +199,17 @@ function depsOf(pkg: PackageJson): Record<string, string> {
 function workspacePatterns(
   projectRoot: string,
   rootPkg: PackageJson | null,
+  tree: WalkedProject,
 ): string[] {
   const declared = rootPkg?.workspaces
   if (Array.isArray(declared)) return declared
   if (declared?.packages) return declared.packages
 
   const pnpmPath = path.join(projectRoot, 'pnpm-workspace.yaml')
-  if (!fs.existsSync(pnpmPath)) return []
+  const raw = readText(pnpmPath, tree)
+  if (raw === null) return []
   try {
-    const yaml = parseSimpleYaml(fs.readFileSync(pnpmPath, 'utf-8'))
+    const yaml = parseSimpleYaml(raw)
     return frontmatterList(yaml, 'packages')
   } catch {
     return []
@@ -116,26 +221,6 @@ function toManifestPattern(pattern: string): string {
   const negated = pattern.startsWith('!')
   const base = (negated ? pattern.slice(1) : pattern).replace(/\/+$/, '')
   return `${negated ? '!' : ''}${base}/package.json`
-}
-
-/** Files matching `patterns` under the project, root-level ones first. */
-function findFiles(projectRoot: string, patterns: string[]): string[] {
-  const files = fg.sync(patterns, {
-    cwd: projectRoot,
-    ignore: DEFAULT_IGNORE,
-    absolute: true,
-    onlyFiles: true,
-  })
-  const depth = (file: string) => path.relative(projectRoot, file).split(/[\\/]/).length
-  return [...new Set(files)].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b))
-}
-
-function readText(file: string): string | null {
-  try {
-    return fs.readFileSync(file, 'utf-8')
-  } catch {
-    return null
-  }
 }
 
 /** Everything the manifests say, plus what the source scans need to know from them. */
@@ -164,18 +249,15 @@ function mergeFirstWins(
 }
 
 /**
- * Reads declared dependencies for the "declared" side of ground truth.
- *
- * npm: in a monorepo the root package.json usually holds only tooling, while
- * the stack a skill should align with lives in the workspace packages — so
- * their dependencies are merged in too. Root declarations win on conflict,
- * being the most authoritative statement about the project as a whole.
- *
- * Other ecosystems: every manifest under the project is read (root first),
- * which covers Cargo workspaces and polyglot repos with a `backend/` Python
- * service next to a `frontend/` package.json without extra configuration.
+ * Reads declared dependencies for the "declared" side of ground truth,
+ * reusing the partitioned manifest list and cached file contents from the
+ * single tree walk.
  */
-function readDeclared(projectRoot: string): Declared {
+function readDeclared(
+  projectRoot: string,
+  tree: WalkedProject,
+  partitioned: PartitionedTree,
+): Declared {
   const declared: Declared = {
     deps: {},
     indirectDeps: {},
@@ -187,11 +269,14 @@ function readDeclared(projectRoot: string): Declared {
   }
 
   // npm
-  const rootPkgPath = path.join(projectRoot, 'package.json')
-  const rootPkg = readPackageJson(rootPkgPath)
-  if (fs.existsSync(rootPkgPath)) declared.ecosystems.add('npm')
+  const rootPkgPath = path.resolve(projectRoot, 'package.json')
+  const rootPkgText = readText(rootPkgPath, tree)
+  const rootPkg = parsePackageJson(rootPkgText)
+  if (rootPkgText !== null || fs.existsSync(rootPkgPath)) {
+    declared.ecosystems.add('npm')
+  }
   if (rootPkg) mergeFirstWins(declared.deps, depsOf(rootPkg))
-  const patterns = workspacePatterns(projectRoot, rootPkg)
+  const patterns = workspacePatterns(projectRoot, rootPkg, tree)
   if (patterns.length > 0) {
     const manifests = fg.sync(patterns.map(toManifestPattern), {
       cwd: projectRoot,
@@ -199,14 +284,14 @@ function readDeclared(projectRoot: string): Declared {
       absolute: true,
     })
     for (const manifest of manifests) {
-      const pkg = readPackageJson(manifest)
+      const pkg = parsePackageJson(readText(manifest, tree))
       if (pkg) mergeFirstWins(declared.deps, depsOf(pkg))
     }
   }
 
   // Python
-  for (const file of findFiles(projectRoot, MANIFEST_GLOBS.python)) {
-    const text = readText(file)
+  for (const file of partitioned.manifests.python) {
+    const text = readText(file, tree)
     if (text === null) continue
     declared.ecosystems.add('python')
     const base = path.basename(file)
@@ -248,7 +333,7 @@ function readDeclared(projectRoot: string): Declared {
         if (fs.existsSync(targetDir)) {
           addLocalGoModule(oldMod)
           const targetGoMod = path.join(targetDir, 'go.mod')
-          const targetText = readText(targetGoMod)
+          const targetText = readText(targetGoMod, tree)
           if (targetText !== null) {
             const parsedTarget = readGoMod(targetText)
             addLocalGoModule(parsedTarget.modulePath)
@@ -260,8 +345,8 @@ function readDeclared(projectRoot: string): Declared {
     }
   }
 
-  for (const file of findFiles(projectRoot, MANIFEST_GLOBS.go)) {
-    const text = readText(file)
+  for (const file of partitioned.manifests.go) {
+    const text = readText(file, tree)
     if (text === null) continue
     declared.ecosystems.add('go')
     const base = path.basename(file)
@@ -270,7 +355,7 @@ function readDeclared(projectRoot: string): Declared {
       const work = readGoWork(text)
       for (const useDir of work.use) {
         const modFile = path.resolve(dir, useDir, 'go.mod')
-        const modText = readText(modFile)
+        const modText = readText(modFile, tree)
         if (modText === null) continue
         const mod = readGoMod(modText)
         addLocalGoModule(mod.modulePath)
@@ -296,12 +381,12 @@ function readDeclared(projectRoot: string): Declared {
   }
 
   // Cargo
-  const cargoFiles = findFiles(projectRoot, MANIFEST_GLOBS.cargo)
+  const cargoFiles = partitioned.manifests.cargo
   const seenCargoFiles = new Set<string>(cargoFiles.map(f => path.resolve(f)))
   const pendingCargoDeps: Record<string, string>[] = []
 
   const visitCargoFile = (file: string) => {
-    const text = readText(file)
+    const text = readText(file, tree)
     if (text === null) return
     declared.ecosystems.add('cargo')
     const manifest = readCargoManifest(text)
@@ -443,18 +528,41 @@ class UsageCollector {
   }
 }
 
-/** Reads every file matching the ecosystem's globs and feeds it to `scan`. */
+/** Reads every file in `files` synchronously (using cached text when present) and feeds it to `scan`. */
 function scanSources(
-  projectRoot: string,
-  ecosystem: Ecosystem,
+  files: string[],
+  tree: WalkedProject,
   collector: UsageCollector,
   scan: (source: string) => SourceImport[],
+  onFileScanned?: () => void,
 ): number {
-  const files = findFiles(projectRoot, SOURCE_GLOBS[ecosystem])
   for (const file of files) {
-    const text = readText(file)
+    const text = readText(file, tree)
+    onFileScanned?.()
     if (text === null) continue
     for (const imp of scan(text)) collector.recordImport(imp, file)
+  }
+  return files.length
+}
+
+/** Reads every file in `files` with bounded async concurrency and feeds it to `scan` in deterministic order. */
+async function scanSourcesAsync(
+  files: string[],
+  tree: WalkedProject,
+  concurrency: number,
+  collector: UsageCollector,
+  scan: (source: string) => SourceImport[],
+  onFileScanned?: () => void,
+): Promise<number> {
+  const texts = await mapConcurrent(files, concurrency, async file => {
+    const text = await readTextAsync(file, tree)
+    onFileScanned?.()
+    return text
+  })
+  for (let i = 0; i < files.length; i++) {
+    const text = texts[i]
+    if (text === null) continue
+    for (const imp of scan(text)) collector.recordImport(imp, files[i])
   }
   return files.length
 }
@@ -466,10 +574,10 @@ function scanSources(
  * and dynamic `import()` string arguments.
  */
 function scanJavaScriptWithTsMorph(
-  projectRoot: string,
+  files: string[],
   collector: UsageCollector,
+  onFileScanned?: () => void,
 ): number {
-  const files = findFiles(projectRoot, SOURCE_GLOBS.npm)
   const { Project, SyntaxKind } = loadTsMorph()
   const project = new Project({
     useInMemoryFileSystem: false,
@@ -481,8 +589,10 @@ function scanJavaScriptWithTsMorph(
     try {
       source = project.addSourceFileAtPath(file)
     } catch {
+      onFileScanned?.()
       continue // unparseable file, skip rather than crash the whole scan
     }
+    onFileScanned?.()
 
     for (const decl of source.getImportDeclarations()) {
       const specifier = decl.getModuleSpecifierValue()
@@ -525,42 +635,95 @@ function scanJavaScriptWithTsMorph(
   return files.length
 }
 
+/** Progress event emitted during a repository scan. */
+export interface ScanProgress {
+  phase: 'walk' | 'manifests' | 'npm' | 'python' | 'go' | 'cargo' | 'complete'
+  progress: number
+  total: number
+  message: string
+}
+
 export interface BuildRepoRealityOptions {
   /** Use the fingerprinted cache (default true; SKILL_AUDITOR_NO_CACHE=1 also disables it) */
   cache?: boolean
   /** JS/TS parser: `lexer` (default) or `ts-morph` (optional peer dependency) */
   parser?: string
+  /** Max concurrent file reads in `buildRepoRealityAsync` (default 32) */
+  concurrency?: number
+  /** Optional progress listener (used by MCP `notifications/progress`) */
+  onProgress?: (progress: ScanProgress) => void
 }
 
-function scanRepoReality(projectRoot: string, parser: Parser): RepoReality {
-  const declared = readDeclared(projectRoot)
-  const collector = new UsageCollector(projectRoot)
-  const present = new Set<Ecosystem>(declared.ecosystems)
+function createProgressTracker(
+  partitioned: PartitionedTree,
+  treeFileCount: number,
+  onProgress?: (progress: ScanProgress) => void,
+) {
+  const totalSources =
+    partitioned.sources.npm.length +
+    partitioned.sources.python.length +
+    partitioned.sources.go.length +
+    partitioned.sources.cargo.length
+  const total = totalSources + 2
+  const step = Math.max(1, Math.ceil(totalSources / 10))
+  let scanned = 0
+  let currentPhase: ScanProgress['phase'] = 'npm'
 
-  const jsFiles =
-    parser === 'ts-morph'
-      ? scanJavaScriptWithTsMorph(projectRoot, collector)
-      : scanSources(projectRoot, 'npm', collector, scanJavaScriptImports)
-  if (jsFiles > 0) present.add('npm')
+  return {
+    walked() {
+      onProgress?.({
+        phase: 'walk',
+        progress: 1,
+        total,
+        message: `Walked ${treeFileCount} project files`,
+      })
+    },
+    manifests() {
+      onProgress?.({
+        phase: 'manifests',
+        progress: 2,
+        total,
+        message: 'Parsed project manifests',
+      })
+    },
+    startEcosystem(ecosystem: Ecosystem, count: number) {
+      currentPhase = ecosystem
+      if (count > 0) {
+        onProgress?.({
+          phase: ecosystem,
+          progress: 2 + scanned,
+          total,
+          message: `Scanning ${count} ${ecosystem} source files`,
+        })
+      }
+    },
+    fileScanned() {
+      scanned++
+      if (totalSources > 10 && scanned < totalSources && scanned % step === 0) {
+        onProgress?.({
+          phase: currentPhase,
+          progress: 2 + scanned,
+          total,
+          message: `Scanned ${scanned}/${totalSources} source files`,
+        })
+      }
+    },
+    complete() {
+      onProgress?.({
+        phase: 'complete',
+        progress: total,
+        total,
+        message: 'Scan complete',
+      })
+    },
+  }
+}
 
-  const pyFiles = scanSources(projectRoot, 'python', collector, source =>
-    scanPythonImports(source, { localModules: declared.pythonLocalModules }),
-  )
-  if (pyFiles > 0) present.add('python')
-
-  const goFiles = scanSources(projectRoot, 'go', collector, source =>
-    scanGoImports(source, { localModules: declared.goModules }),
-  )
-  if (goFiles > 0) present.add('go')
-
-  const rsFiles = scanSources(projectRoot, 'cargo', collector, source =>
-    scanRustImports(source, {
-      declaredCrates: declared.cargoCrates,
-      localCrates: declared.cargoLocalCrates,
-    }),
-  )
-  if (rsFiles > 0) present.add('cargo')
-
+function finalizeReality(
+  declared: Declared,
+  collector: UsageCollector,
+  present: Set<Ecosystem>,
+): RepoReality {
   const hasIndirect = Object.keys(declared.indirectDeps).length > 0
   return {
     ecosystems: ECOSYSTEMS.filter(e => present.has(e)),
@@ -572,9 +735,225 @@ function scanRepoReality(projectRoot: string, parser: Parser): RepoReality {
   }
 }
 
+function scanRepoReality(
+  projectRoot: string,
+  parser: Parser,
+  tree: WalkedProject,
+  onProgress?: (progress: ScanProgress) => void,
+): RepoReality {
+  const partitioned = partitionTree(projectRoot, tree)
+  const tracker = createProgressTracker(
+    partitioned,
+    tree.files.length,
+    onProgress,
+  )
+  tracker.walked()
+
+  const declared = readDeclared(projectRoot, tree, partitioned)
+  tracker.manifests()
+
+  const collector = new UsageCollector(projectRoot)
+  const present = new Set<Ecosystem>(declared.ecosystems)
+
+  tracker.startEcosystem('npm', partitioned.sources.npm.length)
+  const jsFiles =
+    parser === 'ts-morph'
+      ? scanJavaScriptWithTsMorph(
+          partitioned.sources.npm,
+          collector,
+          () => tracker.fileScanned(),
+        )
+      : scanSources(
+          partitioned.sources.npm,
+          tree,
+          collector,
+          scanJavaScriptImports,
+          () => tracker.fileScanned(),
+        )
+  if (jsFiles > 0) present.add('npm')
+
+  tracker.startEcosystem('python', partitioned.sources.python.length)
+  const pyFiles = scanSources(
+    partitioned.sources.python,
+    tree,
+    collector,
+    source => scanPythonImports(source, { localModules: declared.pythonLocalModules }),
+    () => tracker.fileScanned(),
+  )
+  if (pyFiles > 0) present.add('python')
+
+  tracker.startEcosystem('go', partitioned.sources.go.length)
+  const goFiles = scanSources(
+    partitioned.sources.go,
+    tree,
+    collector,
+    source => scanGoImports(source, { localModules: declared.goModules }),
+    () => tracker.fileScanned(),
+  )
+  if (goFiles > 0) present.add('go')
+
+  tracker.startEcosystem('cargo', partitioned.sources.cargo.length)
+  const rsFiles = scanSources(
+    partitioned.sources.cargo,
+    tree,
+    collector,
+    source =>
+      scanRustImports(source, {
+        declaredCrates: declared.cargoCrates,
+        localCrates: declared.cargoLocalCrates,
+      }),
+    () => tracker.fileScanned(),
+  )
+  if (rsFiles > 0) present.add('cargo')
+
+  tracker.complete()
+  return finalizeReality(declared, collector, present)
+}
+
+async function scanRepoRealityAsync(
+  projectRoot: string,
+  parser: Parser,
+  tree: WalkedProject,
+  concurrency: number,
+  onProgress?: (progress: ScanProgress) => void,
+): Promise<RepoReality> {
+  const partitioned = partitionTree(projectRoot, tree)
+  const tracker = createProgressTracker(
+    partitioned,
+    tree.files.length,
+    onProgress,
+  )
+  tracker.walked()
+
+  const declared = readDeclared(projectRoot, tree, partitioned)
+  tracker.manifests()
+
+  const collector = new UsageCollector(projectRoot)
+  const present = new Set<Ecosystem>(declared.ecosystems)
+
+  tracker.startEcosystem('npm', partitioned.sources.npm.length)
+  const jsFiles =
+    parser === 'ts-morph'
+      ? scanJavaScriptWithTsMorph(
+          partitioned.sources.npm,
+          collector,
+          () => tracker.fileScanned(),
+        )
+      : await scanSourcesAsync(
+          partitioned.sources.npm,
+          tree,
+          concurrency,
+          collector,
+          scanJavaScriptImports,
+          () => tracker.fileScanned(),
+        )
+  if (jsFiles > 0) present.add('npm')
+
+  tracker.startEcosystem('python', partitioned.sources.python.length)
+  const pyFiles = await scanSourcesAsync(
+    partitioned.sources.python,
+    tree,
+    concurrency,
+    collector,
+    source => scanPythonImports(source, { localModules: declared.pythonLocalModules }),
+    () => tracker.fileScanned(),
+  )
+  if (pyFiles > 0) present.add('python')
+
+  tracker.startEcosystem('go', partitioned.sources.go.length)
+  const goFiles = await scanSourcesAsync(
+    partitioned.sources.go,
+    tree,
+    concurrency,
+    collector,
+    source => scanGoImports(source, { localModules: declared.goModules }),
+    () => tracker.fileScanned(),
+  )
+  if (goFiles > 0) present.add('go')
+
+  tracker.startEcosystem('cargo', partitioned.sources.cargo.length)
+  const rsFiles = await scanSourcesAsync(
+    partitioned.sources.cargo,
+    tree,
+    concurrency,
+    collector,
+    source =>
+      scanRustImports(source, {
+        declaredCrates: declared.cargoCrates,
+        localCrates: declared.cargoLocalCrates,
+      }),
+    () => tracker.fileScanned(),
+  )
+  if (rsFiles > 0) present.add('cargo')
+
+  tracker.complete()
+  return finalizeReality(declared, collector, present)
+}
+
 /**
- * The project's ground truth. Served from the cache when nothing the scan
- * reads has changed since the last run (see cache.ts), otherwise rebuilt.
+ * The project's ground truth (asynchronous, bounded file-read concurrency).
+ * Walks the project tree once, shares that walk between fingerprinting and
+ * scanning, and serves from cache when nothing changed since the last run.
+ */
+export async function buildRepoRealityAsync(
+  projectRoot: string,
+  options: BuildRepoRealityOptions = {},
+): Promise<RepoReality> {
+  const parser = resolveParser(options.parser)
+  const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY
+  const useCache = options.cache !== false && !cacheDisabledByEnv()
+  const tree = await walkProjectAsync(projectRoot)
+
+  if (!useCache) {
+    return scanRepoRealityAsync(
+      projectRoot,
+      parser,
+      tree,
+      concurrency,
+      options.onProgress,
+    )
+  }
+
+  const fingerprint = await fingerprintProjectAsync(
+    projectRoot,
+    parser,
+    tree,
+    concurrency,
+  )
+  const cached = readCachedReality(projectRoot, fingerprint)
+  if (cached) {
+    options.onProgress?.({
+      phase: 'walk',
+      progress: 0,
+      total: 1,
+      message: `Checked ${tree.files.length} project files against cache`,
+    })
+    options.onProgress?.({
+      phase: 'complete',
+      progress: 1,
+      total: 1,
+      message: 'Loaded project reality from cache',
+    })
+    return cached
+  }
+
+  const reality = await scanRepoRealityAsync(
+    projectRoot,
+    parser,
+    tree,
+    concurrency,
+    options.onProgress,
+  )
+  writeCachedReality(projectRoot, fingerprint, reality)
+  return reality
+}
+
+/**
+ * The project's ground truth (synchronous). Served from the cache when nothing
+ * the scan reads has changed since the last run (see cache.ts), otherwise
+ * rebuilt from a single tree walk.
+ *
+ * @deprecated Prefer {@link buildRepoRealityAsync} for non-blocking, bounded-concurrency scans. The synchronous path will be removed in 3.0.
  */
 export function buildRepoReality(
   projectRoot: string,
@@ -582,13 +961,31 @@ export function buildRepoReality(
 ): RepoReality {
   const parser = resolveParser(options.parser)
   const useCache = options.cache !== false && !cacheDisabledByEnv()
-  if (!useCache) return scanRepoReality(projectRoot, parser)
+  const tree = walkProject(projectRoot)
 
-  const fingerprint = fingerprintProject(projectRoot, parser)
+  if (!useCache) {
+    return scanRepoReality(projectRoot, parser, tree, options.onProgress)
+  }
+
+  const fingerprint = fingerprintProject(projectRoot, parser, tree)
   const cached = readCachedReality(projectRoot, fingerprint)
-  if (cached) return cached
+  if (cached) {
+    options.onProgress?.({
+      phase: 'walk',
+      progress: 0,
+      total: 1,
+      message: `Checked ${tree.files.length} project files against cache`,
+    })
+    options.onProgress?.({
+      phase: 'complete',
+      progress: 1,
+      total: 1,
+      message: 'Loaded project reality from cache',
+    })
+    return cached
+  }
 
-  const reality = scanRepoReality(projectRoot, parser)
+  const reality = scanRepoReality(projectRoot, parser, tree, options.onProgress)
   writeCachedReality(projectRoot, fingerprint, reality)
   return reality
 }

@@ -1,6 +1,6 @@
 {
   "name": "skill-auditor",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Audit imported Agent Skills (SKILL.md) against the reality of the project they are installed in: npm, Python, Go and Cargo dependencies and imports.",
   "bin": {
     "skill-auditor": "dist/cli.js"
@@ -35,7 +35,8 @@
     "typecheck": "tsc --noEmit",
     "prepare": "tsc",
     "prepublishOnly": "npm test",
-    "test": "npm run build && node --test"
+    "test": "npm run build && node --test",
+    "bench": "node bench/run.mjs"
   },
   "keywords": [
     "agent-skills",
