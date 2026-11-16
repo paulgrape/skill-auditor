@@ -3,6 +3,42 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 2.3.0
+
+Repo-grounded prose and command verification (`stale-path`, `stale-command`) and
+intrinsic-quality prose heuristics ("when to use" clause, step structure, and
+example-to-prose balance). `schemaVersion` stays **2**.
+
+### Added
+
+- **`stale-path` finding.** `extractSkillIdentifiers` (`normalizeCitedPath`)
+  extracts project-relative file paths cited in `SKILL.md` and `references/*.md`
+  inline code spans or `// from <path>` / `# from <path>` fence comments
+  (`locations.paths`), while ignoring package specifiers, path aliases, URL
+  routes, placeholders, globs, and paths that resolve to bundled files inside the
+  skill directory itself (such as `references/stores.md`). `buildAlignmentReport`
+  verifies each cited path against `RepoReality` (`projectFiles` / `projectRoot`)
+  and emits a warning-severity `stale-path` finding with a suggestion when a
+  cited file does not exist in the project.
+- **`stale-command` finding.** `extractSkillIdentifiers` (`extractShellCommands`)
+  extracts `npm run <script>`, `pnpm [run] <script>`, `yarn run <script>`,
+  `bun run <script>`, and `make <target>` invocations from shell fences and
+  inline code (`locations.commands`), skipping built-in CLI subcommands (`npm
+  install`, `pnpm install`, `pnpm dlx`, etc.). `buildRepoReality` /
+  `buildRepoRealityAsync` collect `scripts` from `package.json` manifests (root
+  and workspaces) and `makeTargets` (`readMakeTargets`) from `Makefile` /
+  `makefile` / `GNUmakefile` files, and `buildAlignmentReport` emits a
+  warning-severity `stale-command` finding naming the available scripts or
+  targets when a referenced command is undefined.
+- **Intrinsic-quality prose heuristics (`analyzeIntrinsicQuality`).** Expanded
+  `scoreIntrinsicQuality` with deterministic, non-configurable prose signals:
+  presence of a "when to use" trigger clause in `description` or body
+  headings/prose (`hasWhenToUse`, 15 pts), actionable step/list structure and
+  multi-step depth (`hasStepStructure`, 15 pts), and concrete examples paired
+  with a balanced example-to-prose ratio (`hasExamples`, `proseRatio`,
+  `balancedExampleToProse`, 15 pts: 15%–95% prose share with at least 15 prose
+  words).
+
 ## 2.2.0
 
 Scale and throughput release: single tree walk shared between fingerprinting and

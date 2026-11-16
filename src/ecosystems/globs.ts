@@ -27,6 +27,16 @@ export const MANIFEST_GLOBS: Record<Ecosystem, string[]> = {
   cargo: ['**/Cargo.toml'],
 }
 
+/** Makefile globs scanned for target definitions (`make <target>`). */
+export const MAKEFILE_GLOBS: string[] = [
+  'Makefile',
+  'makefile',
+  'GNUmakefile',
+  '**/Makefile',
+  '**/makefile',
+  '**/GNUmakefile',
+]
+
 export const ECOSYSTEMS: Ecosystem[] = ['npm', 'python', 'go', 'cargo']
 
 export function allSourceGlobs(): string[] {
@@ -34,5 +44,5 @@ export function allSourceGlobs(): string[] {
 }
 
 export function allManifestGlobs(): string[] {
-  return ECOSYSTEMS.flatMap(e => MANIFEST_GLOBS[e])
+  return [...ECOSYSTEMS.flatMap(e => MANIFEST_GLOBS[e]), ...MAKEFILE_GLOBS]
 }

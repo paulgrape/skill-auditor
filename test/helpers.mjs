@@ -104,6 +104,8 @@ export function makeSkill({
   substantiatedByProse = true,
   importedIdentifiers = {},
   unusedImportCount = 0,
+  paths = {},
+  commands = [],
   codeEvidence = { codeFences: 0, shellFences: 0 },
 } = {}) {
   return {
@@ -137,6 +139,8 @@ export function makeSkill({
       importSpecifiers: {},
       apiCalls: {},
       unusedImports: [],
+      paths,
+      commands,
     },
     codeEvidence,
   }
@@ -149,6 +153,10 @@ export function makeRepo({
   usedImports = {},
   usedIdentifiers = {},
   ecosystems = ['npm'],
+  projectRoot,
+  projectFiles,
+  scripts,
+  makeTargets,
 } = {}) {
   return {
     ecosystems,
@@ -161,5 +169,9 @@ export function makeRepo({
       Object.entries(usedIdentifiers).map(([k, v]) => [k, new Set(v)]),
     ),
     importEvidence: {},
+    ...(projectRoot !== undefined ? { projectRoot } : {}),
+    ...(projectFiles !== undefined ? { projectFiles: new Set(projectFiles) } : {}),
+    ...(scripts !== undefined ? { scripts: new Set(scripts) } : {}),
+    ...(makeTargets !== undefined ? { makeTargets: new Set(makeTargets) } : {}),
   }
 }

@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, test } from 'node:test'
+import {
+  extractShellCommands,
+  extractSkillIdentifiers,
+  normalizeCitedPath,
+} from '../dist/skillIdentifiers.js'
 import { FAKE_PROJECT, parseJson } from './helpers.mjs'
 
 describe('non-package specifiers', () => {
@@ -202,5 +210,123 @@ describe('procedural skills', () => {
     ])
     assert.equal(results[0].score.kind, 'procedural')
     assert.equal(results[0].score.overall, null)
+  })
+})
+
+describe('cited paths and shell commands', () => {
+  test('normalizeCitedPath accepts project-relative file paths and rejects specifiers, aliases, routes, and globs', () => {
+    assert.equal(normalizeCitedPath('src/foo.ts'), 'src/foo.ts')
+    assert.equal(normalizeCitedPath('./app/main.py:42'), 'app/main.py')
+    assert.equal(normalizeCitedPath('.github/workflows/ci.yml#L10'), '.github/workflows/ci.yml')
+    assert.equal(normalizeCitedPath('next/navigation'), null)
+    assert.equal(normalizeCitedPath('@/components/Button.tsx'), null)
+    assert.equal(normalizeCitedPath('~/styles/theme.ts'), null)
+    assert.equal(normalizeCitedPath('/llms.txt'), null)
+    assert.equal(normalizeCitedPath('src/stores/'), null)
+    assert.equal(normalizeCitedPath('<path/from/evidence.ts>'), null)
+    assert.equal(normalizeCitedPath('github.com/gin-gonic/gin'), null)
+    assert.equal(normalizeCitedPath('robots.txt'), null)
+  })
+
+  test('extractShellCommands parses npm run, pnpm, yarn run, bun run, and make targets while skipping built-in CLI subcommands', () => {
+    const commands = extractShellCommands(
+      [
+        '# comment line',
+        'npm install -g skill-auditor',
+        'npm run typecheck && pnpm test:unit',
+        'pnpm install',
+        'pnpm --filter web build',
+        'make -C backend migrate',
+      ].join('\n'),
+    )
+    assert.deepEqual(commands, [
+      { command: 'npm run typecheck', runner: 'npm', target: 'typecheck', line: 2 },
+      { command: 'pnpm test:unit', runner: 'pnpm', target: 'test:unit', line: 2 },
+      { command: 'pnpm build', runner: 'pnpm', target: 'build', line: 4 },
+      { command: 'make migrate', runner: 'make', target: 'migrate', line: 5 },
+    ])
+  })
+
+  test('extracts project paths from aligned-skill and ignores skill-local bundled references', () => {
+    const aligned = extractSkillIdentifiers('./fixtures/aligned-skill')
+    assert.ok(aligned.locations.paths?.['src/app.tsx'])
+    assert.equal(aligned.locations.paths['src/app.tsx'].line, 10)
+
+    const withRefs = extractSkillIdentifiers('./fixtures/references-skill')
+    assert.equal(withRefs.locations.paths?.['references/stores.md'], undefined)
+  })
+
+  test('audits a skill with stale paths and stale commands end-to-end against a project', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-auditor-230-'))
+    try {
+      const projDir = path.join(tmp, 'project')
+      const skillDir = path.join(tmp, 'my-skill')
+      fs.mkdirSync(path.join(projDir, 'src'), { recursive: true })
+      fs.mkdirSync(skillDir, { recursive: true })
+
+      fs.writeFileSync(
+        path.join(projDir, 'package.json'),
+        JSON.stringify({
+          name: 'proj',
+          scripts: { build: 'tsc', test: 'node --test' },
+          dependencies: { zustand: '^5.0.0' },
+        }),
+      )
+      fs.writeFileSync(
+        path.join(projDir, 'Makefile'),
+        '.PHONY: check\ncheck:\n\tnpm test\n',
+      )
+      fs.writeFileSync(
+        path.join(projDir, 'src', 'real.ts'),
+        "import { create } from 'zustand'\nexport const s = create(() => ({}))\n",
+      )
+
+      fs.writeFileSync(
+        path.join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: my-skill',
+          'description: State workflow skill. Use when updating stores.',
+          '---',
+          '',
+          '# State workflow',
+          '',
+          'Inspect `src/real.ts` and `src/deleted.ts` before editing `app/main.py`.',
+          '',
+          '```bash',
+          'npm run build',
+          'npm run missing-script',
+          'pnpm ghost-task',
+          'make check',
+          'make deploy',
+          '```',
+        ].join('\n'),
+      )
+
+      const { results } = parseJson([
+        'audit',
+        skillDir,
+        '--project',
+        projDir,
+        '--no-cache',
+        '--json',
+      ])
+      const findings = results[0].report.findings
+      const stalePaths = findings
+        .filter(f => f.kind === 'stale-path')
+        .map(f => f.skillReference)
+      const staleCommands = findings
+        .filter(f => f.kind === 'stale-command')
+        .map(f => f.skillReference)
+
+      assert.deepEqual(stalePaths, ['app/main.py', 'src/deleted.ts'])
+      assert.deepEqual(staleCommands, [
+        'npm run missing-script',
+        'pnpm ghost-task',
+        'make deploy',
+      ])
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })

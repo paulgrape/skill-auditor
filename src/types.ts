@@ -41,6 +41,14 @@ export interface RepoReality {
    * semantics hold, and used to suggest `go mod tidy` when referenced.
    */
   indirectDeps?: Record<string, string>
+  /** Resolved project root directory used to verify cited relative file paths */
+  projectRoot?: string
+  /** Project-relative file paths discovered during the project tree walk */
+  projectFiles?: Set<string>
+  /** Script names declared in `package.json#scripts` across the project and workspaces */
+  scripts?: Set<string>
+  /** Target names declared in `Makefile` / `makefile` / `GNUmakefile` */
+  makeTargets?: Set<string>
 }
 
 /**
@@ -78,6 +86,21 @@ export interface PackageReference {
   ecosystem?: Ecosystem
 }
 
+/** Command runner family for script/target references in a skill. */
+export type SkillCommandRunner = 'npm' | 'pnpm' | 'yarn' | 'bun' | 'make'
+
+/** A package.json script or Makefile target invocation extracted from a skill. */
+export interface SkillCommandRef {
+  /** Normalized command as written in the skill, e.g. `npm run build`, `pnpm lint`, `make test` */
+  command: string
+  /** Runner family: npm/pnpm/yarn/bun check package.json#scripts; make checks Makefile targets */
+  runner: SkillCommandRunner
+  /** Script or target name, e.g. `build`, `lint`, `test` */
+  target: string
+  /** First location where the command was cited */
+  location: SourceLocation
+}
+
 /** First occurrence of each extracted reference. */
 export interface SkillLocations {
   packages: Record<string, SourceLocation>
@@ -85,6 +108,10 @@ export interface SkillLocations {
   apiCalls: Record<string, SourceLocation>
   /** Import statements whose bindings are never used below them, one entry each */
   unusedImports: SourceLocation[]
+  /** Project-relative file paths cited in prose or fence headers, e.g. `src/foo.ts` */
+  paths?: Record<string, SourceLocation>
+  /** Script and Makefile target invocations extracted from shell fences and inline code */
+  commands?: SkillCommandRef[]
 }
 
 /** What kinds of code the skill's fenced blocks contained. */
@@ -131,6 +158,8 @@ export type DriftFindingKind =
   | 'unused-reference'
   | 'unverified-api'
   | 'metric-stuffing'
+  | 'stale-path'
+  | 'stale-command'
   | 'unscorable'
 
 export interface DriftFinding {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { buildAlignmentReport } from '../dist/diff.js'
+import { readMakeTargets } from '../dist/repoReality.js'
 import { buildSuggestions } from '../dist/suggestions.js'
 import { categoriesForPackage, configureTaxonomy, MUST_HAVE_CHECKLISTS } from '../dist/taxonomy.js'
 import { makeRepo, makeSkill } from './helpers.mjs'
@@ -269,5 +270,97 @@ describe('backend taxonomy, ecosystem-qualified keys, and polyglot deprecations'
 
     const suggestions = buildSuggestions(report.findings, repo)
     assert.ok(suggestions.some(s => s.suggestion.includes('go mod tidy')))
+  })
+})
+
+describe('stale-path and stale-command findings', () => {
+  test('emits stale-path for cited project file paths that do not exist', () => {
+    const skill = makeSkill({
+      paths: {
+        'src/app.tsx': { file: 'SKILL.md', line: 10, heading: 'Routing' },
+        'src/foo.ts': { file: 'SKILL.md', line: 14, heading: 'Routing' },
+        'app/main.py': { file: 'SKILL.md', line: 22, heading: 'Backend' },
+      },
+    })
+    const repo = makeRepo({
+      projectFiles: ['src/app.tsx', 'package.json'],
+    })
+    const report = buildAlignmentReport(skill, repo)
+    const stalePaths = report.findings.filter(f => f.kind === 'stale-path')
+    assert.equal(stalePaths.length, 2)
+    assert.deepEqual(
+      stalePaths.map(f => f.skillReference),
+      ['app/main.py', 'src/foo.ts'],
+    )
+    assert.equal(stalePaths[0].severity, 'warning')
+    assert.equal(stalePaths[1].location.line, 14)
+
+    const suggestions = buildSuggestions(stalePaths)
+    assert.ok(
+      suggestions.every(s => s.suggestion.includes('does not exist in the project')),
+    )
+  })
+
+  test('emits stale-command for npm/pnpm/make targets missing from package.json or Makefile', () => {
+    const skill = makeSkill({
+      commands: [
+        {
+          command: 'npm run build',
+          runner: 'npm',
+          target: 'build',
+          location: { file: 'SKILL.md', line: 12 },
+        },
+        {
+          command: 'pnpm lint:fix',
+          runner: 'pnpm',
+          target: 'lint:fix',
+          location: { file: 'SKILL.md', line: 15 },
+        },
+        {
+          command: 'make deploy',
+          runner: 'make',
+          target: 'deploy',
+          location: { file: 'SKILL.md', line: 20 },
+        },
+      ],
+    })
+    const repo = makeRepo({
+      scripts: ['build', 'test'],
+      makeTargets: ['check', 'test'],
+    })
+    const report = buildAlignmentReport(skill, repo)
+    const staleCommands = report.findings.filter(f => f.kind === 'stale-command')
+    assert.equal(staleCommands.length, 2)
+    assert.deepEqual(
+      staleCommands.map(f => f.skillReference),
+      ['pnpm lint:fix', 'make deploy'],
+    )
+    assert.equal(staleCommands[0].repoReality, 'build, test')
+    assert.equal(staleCommands[1].repoReality, 'check, test')
+
+    const suggestions = buildSuggestions(staleCommands)
+    assert.ok(suggestions[0].suggestion.includes('build, test'))
+    assert.ok(suggestions[1].suggestion.includes('check, test'))
+  })
+
+  test('readMakeTargets parses .PHONY and target rules while ignoring variables and pattern rules', () => {
+    const makefile = [
+      '# Build makefile',
+      '.PHONY: build lint',
+      'CC := gcc',
+      'FLAGS ?= -O2',
+      '%.o: %.c',
+      '\t$(CC) -c $<',
+      'build:',
+      '\tgo build ./...',
+      'test-unit test-int: build',
+      '\tgo test ./...',
+    ].join('\n')
+    assert.deepEqual(readMakeTargets(makefile), [
+      'build',
+      'lint',
+      'test-int',
+      'test-unit',
+    ])
   })
 })

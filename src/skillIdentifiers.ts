@@ -28,6 +28,8 @@ import type {
   Ecosystem,
   PackageReference,
   ReferenceSubstantiation,
+  SkillCommandRef,
+  SkillCommandRunner,
   SkillIdentifiers,
   SourceLocation,
 } from './types.js'
@@ -392,6 +394,310 @@ const SHELL_FENCE_TAGS = new Set([
   'bat',
 ])
 
+const CITED_FILE_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.mts',
+  '.cts',
+  '.py',
+  '.pyi',
+  '.go',
+  '.rs',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.md',
+  '.mdx',
+  '.css',
+  '.scss',
+  '.sass',
+  '.less',
+  '.html',
+  '.vue',
+  '.svelte',
+  '.astro',
+  '.sql',
+  '.graphql',
+  '.gql',
+  '.proto',
+  '.sh',
+  '.bash',
+  '.zsh',
+])
+
+const ALLOWED_DOT_DIRS = new Set([
+  '.github',
+  '.cursor',
+  '.claude',
+  '.agents',
+  '.codex',
+  '.vscode',
+  '.husky',
+  '.circleci',
+])
+
+/**
+ * Normalizes a candidate project-relative file path cited in a skill (e.g.
+ * `src/foo.ts`, `./app/main.py`, `src/app.tsx:42`), or returns `null` when
+ * the token is a package specifier, URL/route, alias, placeholder, or glob.
+ */
+export function normalizeCitedPath(raw: string): string | null {
+  let text = raw.trim()
+  text = text.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)$/, '')
+  if (
+    !text ||
+    /[\s<>*?[\]{}$`'";|\\…~]/.test(text) ||
+    text.includes('...')
+  ) {
+    return null
+  }
+  if (text.startsWith('./')) text = text.slice(2)
+  if (
+    !text ||
+    text.startsWith('/') ||
+    text.endsWith('/') ||
+    text.startsWith('..') ||
+    text.startsWith('@') ||
+    text.startsWith('#') ||
+    !text.includes('/')
+  ) {
+    return null
+  }
+
+  const segments = text.split('/')
+  for (const seg of segments) {
+    if (!seg || seg === '.' || seg === '..' || !/^[A-Za-z0-9._-]+$/.test(seg)) {
+      return null
+    }
+  }
+
+  const first = segments[0]
+  if (first.startsWith('.')) {
+    if (!ALLOWED_DOT_DIRS.has(first)) return null
+  } else if (first.includes('.')) {
+    // Domain-prefixed module paths (github.com/..., gorm.io/...) are not file paths.
+    return null
+  }
+
+  const fileName = segments[segments.length - 1]
+  const ext = path.posix.extname(fileName).toLowerCase()
+  if (!ext || fileName === ext || !CITED_FILE_EXTENSIONS.has(ext)) {
+    return null
+  }
+
+  return text
+}
+
+const PNPM_BUILTINS = new Set([
+  'add',
+  'install',
+  'i',
+  'update',
+  'up',
+  'upgrade',
+  'remove',
+  'rm',
+  'uninstall',
+  'un',
+  'link',
+  'ln',
+  'unlink',
+  'import',
+  'rebuild',
+  'rb',
+  'prune',
+  'fetch',
+  'install-test',
+  'it',
+  'dedupe',
+  'patch',
+  'patch-commit',
+  'patch-remove',
+  'audit',
+  'list',
+  'ls',
+  'outdated',
+  'why',
+  'licenses',
+  'pack',
+  'publish',
+  'dlx',
+  'create',
+  'exec',
+  'env',
+  'server',
+  'store',
+  'cache',
+  'config',
+  'c',
+  'setup',
+  'init',
+  'deploy',
+  'doctor',
+  'bin',
+  'root',
+  'cat-file',
+  'cat-index',
+  'find-hash',
+  'help',
+  'version',
+])
+
+const NPM_VALUE_FLAGS = new Set(['--prefix', '-C', '-w', '--workspace'])
+const PNPM_VALUE_FLAGS = new Set([
+  '--filter',
+  '-F',
+  '--dir',
+  '-C',
+  '--workspace-concurrency',
+])
+const MAKE_VALUE_FLAGS = new Set(['-C', '-f', '-I', '-W', '-o', '-l'])
+
+const SCRIPT_TARGET_RE = /^[A-Za-z0-9_][A-Za-z0-9_:./-]*$/
+const MAKE_TARGET_RE = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/
+
+function parseSubcommand(
+  segment: string,
+): { command: string; runner: SkillCommandRunner; target: string } | null {
+  let trimmed = segment.trim()
+  if (!trimmed || trimmed.startsWith('#')) return null
+  if (/^[$>]\s+\S/.test(trimmed)) {
+    trimmed = trimmed.slice(1).trim()
+  }
+
+  const rawTokens = trimmed.split(/\s+/).filter(Boolean)
+  let idx = 0
+  while (
+    idx < rawTokens.length &&
+    /^[A-Za-z_][A-Za-z0-9_]*=/.test(rawTokens[idx])
+  ) {
+    idx++
+  }
+  const tokens = rawTokens.slice(idx)
+  if (tokens.length < 2) return null
+
+  const bin = tokens[0]
+  if (bin === 'npm' || bin === 'yarn' || bin === 'bun') {
+    let i = 1
+    while (i < tokens.length && tokens[i].startsWith('-')) {
+      if (NPM_VALUE_FLAGS.has(tokens[i])) i += 2
+      else i++
+    }
+    if (
+      i + 1 < tokens.length &&
+      (tokens[i] === 'run' || tokens[i] === 'run-script')
+    ) {
+      const target = tokens[i + 1]
+      if (SCRIPT_TARGET_RE.test(target)) {
+        return {
+          command: `${bin} run ${target}`,
+          runner: bin,
+          target,
+        }
+      }
+    }
+    return null
+  }
+
+  if (bin === 'pnpm') {
+    let i = 1
+    while (i < tokens.length && tokens[i].startsWith('-')) {
+      if (PNPM_VALUE_FLAGS.has(tokens[i])) i += 2
+      else i++
+    }
+    if (i >= tokens.length) return null
+    if (tokens[i] === 'run' || tokens[i] === 'run-script') {
+      const target = tokens[i + 1]
+      if (target && SCRIPT_TARGET_RE.test(target)) {
+        return {
+          command: `pnpm run ${target}`,
+          runner: 'pnpm',
+          target,
+        }
+      }
+      return null
+    }
+    const target = tokens[i]
+    if (!PNPM_BUILTINS.has(target) && SCRIPT_TARGET_RE.test(target)) {
+      return {
+        command: `pnpm ${target}`,
+        runner: 'pnpm',
+        target,
+      }
+    }
+    return null
+  }
+
+  if (bin === 'make') {
+    let i = 1
+    while (i < tokens.length) {
+      const tok = tokens[i]
+      if (MAKE_VALUE_FLAGS.has(tok)) {
+        i += 2
+        continue
+      }
+      if (tok === '-j' && i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) {
+        i += 2
+        continue
+      }
+      if (tok.startsWith('-') || tok.includes('=')) {
+        i++
+        continue
+      }
+      break
+    }
+    if (i < tokens.length) {
+      const target = tokens[i]
+      if (MAKE_TARGET_RE.test(target)) {
+        return {
+          command: `make ${target}`,
+          runner: 'make',
+          target,
+        }
+      }
+    }
+    return null
+  }
+
+  return null
+}
+
+/**
+ * Extracts `npm run <script>`, `pnpm [run] <script>`, `yarn run <script>`,
+ * `bun run <script>`, and `make <target>` invocations from shell code or an
+ * inline code span, with 0-based line offsets inside `text`.
+ */
+export function extractShellCommands(
+  text: string,
+): { command: string; runner: SkillCommandRunner; target: string; line: number }[] {
+  const results: {
+    command: string
+    runner: SkillCommandRunner
+    target: string
+    line: number
+  }[] = []
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+
+  lines.forEach((rawLine, lineIndex) => {
+    const trimmed = rawLine.trim()
+    if (!trimmed || trimmed.startsWith('#')) return
+    const segments = trimmed.split(/\s*(?:&&|\|\||;|\|)\s*/)
+    for (const seg of segments) {
+      const parsed = parseSubcommand(seg)
+      if (parsed) {
+        results.push({ ...parsed, line: lineIndex })
+      }
+    }
+  })
+
+  return results
+}
+
 interface FencedBlock {
   language: FenceLanguage
   /** Raw info-string tag, lower-cased */
@@ -559,8 +865,58 @@ export function extractSkillIdentifiers(
     packageRefs: {},
     importedIdentifiers: {},
     unusedImportCount: 0,
-    locations: { packages: {}, importSpecifiers: {}, apiCalls: {}, unusedImports: [] },
+    locations: {
+      packages: {},
+      importSpecifiers: {},
+      apiCalls: {},
+      unusedImports: [],
+      paths: {},
+      commands: [],
+    },
     codeEvidence: { codeFences: 0, shellFences: 0 },
+  }
+
+  const resolvedSkillDir = path.resolve(skillDir)
+  const seenCommands = new Set<string>()
+
+  const recordPath = (rawPath: string, location: SourceLocation) => {
+    const normalized = normalizeCitedPath(rawPath)
+    if (!normalized) return
+    // A path that resolves to a bundled file inside the skill directory itself
+    // (such as `references/stores.md`) is a skill-local reference, not a
+    // project path citation.
+    try {
+      const skillLocal = path.resolve(resolvedSkillDir, normalized)
+      const rel = path.relative(resolvedSkillDir, skillLocal)
+      if (
+        !rel.startsWith('..') &&
+        !path.isAbsolute(rel) &&
+        fs.existsSync(skillLocal)
+      ) {
+        return
+      }
+    } catch {
+      // ignore fs errors
+    }
+    const paths = (result.locations.paths ??= {})
+    if (!paths[normalized]) {
+      paths[normalized] = location
+    }
+  }
+
+  const recordCommand = (
+    cmd: { command: string; runner: SkillCommandRunner; target: string },
+    location: SourceLocation,
+  ) => {
+    if (seenCommands.has(cmd.command)) return
+    seenCommands.add(cmd.command)
+    const commands = (result.locations.commands ??= [])
+    commands.push({
+      command: cmd.command,
+      runner: cmd.runner,
+      target: cmd.target,
+      location,
+    } satisfies SkillCommandRef)
   }
 
   const recordRef = (
@@ -630,19 +986,37 @@ export function extractSkillIdentifiers(
       const proseOk = section.proseWords >= PROSE_MIN_WORDS
 
       for (const block of section.fencedBlocks) {
-        if (SHELL_FENCE_TAGS.has(block.tag)) result.codeEvidence.shellFences++
+        const blockAt = locator(file, block.line + 1, section.heading)
+        if (SHELL_FENCE_TAGS.has(block.tag)) {
+          result.codeEvidence.shellFences++
+          for (const cmd of extractShellCommands(block.code)) {
+            recordCommand(cmd, blockAt(cmd.line))
+          }
+        }
+        // Check leading `// from <path>` or `# from <path>` source comments in code fences.
+        const fenceLines = block.code.split('\n')
+        fenceLines.forEach((fenceLine, idx) => {
+          const fromMatch = fenceLine.match(/^\s*(?:\/\/|#)\s*from\s+(\S+)/)
+          if (fromMatch) {
+            recordPath(fromMatch[1], blockAt(idx))
+          }
+        })
         const analysis = analyzeCode(block.code, block.language)
         if (block.language !== 'other' && yieldedReferences(analysis)) {
           result.codeEvidence.codeFences++
         }
         // Code starts on the line after the fence opener.
-        mergeAnalysis(analysis, proseOk, locator(file, block.line + 1, section.heading))
+        mergeAnalysis(analysis, proseOk, blockAt)
       }
 
       // Inline code spans: imports/requires still count as code, but a
       // package name that only ever appears inline is a bare mention.
       for (const span of section.inlineSpans) {
         const at = locator(file, span.line, section.heading)
+        recordPath(span.text, at(0))
+        for (const cmd of extractShellCommands(span.text)) {
+          recordCommand(cmd, at(cmd.line))
+        }
         const analysis = analyzeCode(span.text, 'untagged')
         // Downgrade anything found in an inline span to 'mention' — a
         // one-line span is never a demonstrated usage.

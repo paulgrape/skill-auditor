@@ -44,6 +44,7 @@ export {
   buildRepoReality,
   buildRepoRealityAsync,
   PARSERS,
+  readMakeTargets,
   resolveParser,
   type BuildRepoRealityOptions,
   type Parser,
@@ -88,9 +89,16 @@ export {
   type AuditResult,
 } from './reports.js'
 export { scaffoldSkill } from './scaffold.js'
-export { scoreSkill } from './score.js'
 export {
+  analyzeIntrinsicQuality,
+  scoreIntrinsicQuality,
+  scoreSkill,
+  type IntrinsicQualitySignals,
+} from './score.js'
+export {
+  extractShellCommands,
   extractSkillIdentifiers,
+  normalizeCitedPath,
   type ExtractSkillOptions,
 } from './skillIdentifiers.js'
 export { runSpecCompliance } from './specCompliance.js'
